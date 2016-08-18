@@ -7,9 +7,14 @@
             [schema.core :as s]))
 
 (defn register-peer-info [replica args]
+  (assert
+   (:peer-site args)
+   )
+
   (-> replica
       (update-in [:groups-index (:group-id args)] (fnil conj #{}) (:id args))
       (assoc-in [:groups-reverse-index (:id args)] (:group-id args))
+      (assoc-in [:peer-sites (:id args)] (:peer-site args))
       (assoc-in [:peer-state (:id args)] :idle)
       (assoc-in [:peer-tags (:id args)] (:tags args))))
 

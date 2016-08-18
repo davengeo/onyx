@@ -441,6 +441,7 @@
          (let [final-groups (reduce (partial apply-command peer-config)
                                     groups
                                     commands)
+               _ (println "Number log entries:" (count @zookeeper-log))
                ;; FIXME, shouldn't have to hack version in everywhere
                final-replica (reduce #(extensions/apply-log-entry %2 (assoc %1 :version (:message-id %2))) 
                                      (onyx.log.replica/starting-replica peer-config)

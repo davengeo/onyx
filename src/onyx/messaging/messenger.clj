@@ -5,8 +5,8 @@
     (:onyx.messaging/impl (:messaging replica))))
 
 (defmulti get-peer-site 
-  (fn [replica peer]
-    (:onyx.messaging/impl (:messaging replica))))
+  (fn [peer-config]
+    (:onyx.messaging/impl peer-config)))
 
 (defmulti build-messenger-group 
   (fn [peer-config]
@@ -36,6 +36,8 @@
 
   (poll [messenger])
   (poll-recover [messenger])
+  (recover [messenger])
+  (segments [messenger])
 
   (offer-segments [messenger messages task-slots])
   (emit-barrier [messenger] [messenger barrier-opts])

@@ -29,6 +29,11 @@
                                                      :slot-id (select-slot job-task-id-slots hash-group route)
                                                      :dst-task-id [job-id route]}) 
                                                   flow))]
+
+                          ;; FIXME split out destinations for retry, may need to switch destinations, can'd do every thning in a single offer
+                          ;; FIXME select site ahead of time
+
+
                           ;; FIXME: must retry offer when offer fails
                           ;; TODO: be smart about sending messages to multiple co-located tasks
                           ;; TODO: send more than one message at a time

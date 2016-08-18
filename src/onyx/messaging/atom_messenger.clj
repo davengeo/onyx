@@ -26,7 +26,7 @@
   {})
 
 (defmethod m/get-peer-site :atom
-  [replica peer]
+  [peer-config]
   {})
 
 (defn switch-peer [messenger peer]
