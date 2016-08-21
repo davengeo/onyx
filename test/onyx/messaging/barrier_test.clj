@@ -5,11 +5,11 @@
             [onyx.api])
   (:import [io.aeron.logbuffer ControlledFragmentHandler ControlledFragmentHandler$Action]))
 
-(deftest test-rotate
-  (is (= [] (a/rotate [])))
-  (is (= [2 3 1] (a/rotate [1 2 3])))
-  (is (= [3 1 2] (a/rotate [2 3 1])))
-  (is (= [1 2 3] (a/rotate [3 1 2]))))
+; (deftest test-rotate
+;   (is (= [] (a/rotate [])))
+;   (is (= [2 3 1] (a/rotate [1 2 3])))
+;   (is (= [3 1 2] (a/rotate [2 3 1])))
+;   (is (= [1 2 3] (a/rotate [3 1 2]))))
 
 (comment (deftest aeron-ticketing-response-test
   (testing "local index equal to ticket"

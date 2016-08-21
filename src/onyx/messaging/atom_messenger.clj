@@ -40,7 +40,7 @@
              (apply f (switch-peer m (:id messenger)) args))))) 
 
 (defrecord AtomMessenger
-  [messenger-group peer-config id messages immutable-messenger]
+  [messenger-group peer-config id immutable-messenger]
   component/Lifecycle
 
   (start [component]
@@ -131,11 +131,10 @@
     (update-messenger-atom! messenger m/receive-acks)
     messenger)
 
-  (poll
-    [messenger]
-    (assoc messenger 
-           :message 
-           (:message (update-messenger-atom! messenger m/poll))))
+  (poll [messenger]
+    (if-let [message (:message (update-messenger-atom! messenger m/poll))]
+      [message]
+      []))
 
   (poll-recover [messenger]
     (:recover (update-messenger-atom! messenger m/poll-recover)))
@@ -172,4 +171,6 @@
     ))
 
 (defmethod m/build-messenger :atom [peer-config messenger-group id]
-  (map->AtomMessenger {:id id :peer-config peer-config :messenger-group messenger-group}))
+  (map->AtomMessenger {:id id 
+                       :peer-config peer-config 
+                       :messenger-group messenger-group}))

@@ -36,8 +36,6 @@
 
   (poll [messenger])
   (poll-recover [messenger])
-  (recover [messenger])
-  (segments [messenger])
 
   (offer-segments [messenger messages task-slots])
   (emit-barrier [messenger] [messenger barrier-opts])

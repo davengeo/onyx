@@ -121,15 +121,10 @@
 (defn ack? [v]
   (instance? onyx.types.BarrierAck v))
 
-(defn update-first-subscriber [messenger f]
-  (update-in messenger [:subscriptions] f))
-
-(defn set-ticket [messenger {:keys [src-peer-id dst-task-id slot-id]} ticket]
-  (assoc-in messenger [:tickets src-peer-id dst-task-id slot-id] ticket))
-
 (defn write [messenger {:keys [publication] :as task-slot} message]
   (info "TRYING TO WRITE" (into {} message))
   (let [buf ^UnsafeBuffer (UnsafeBuffer. (messaging-compress message))]
+    ;; FIXME, should not while here, should just offer, return true false
         (while (let [ret (.offer publication buf 0 (.capacity buf))] 
                  (println "ret is " ret)
                  (when (= ret Publication/CLOSED)
@@ -140,6 +135,13 @@
 
 (defn is-next-barrier? [messenger barrier]
   (assert (m/replica-version messenger))
+  (info "Is next barrier?"
+        (and (= (m/replica-version messenger) (:replica-version barrier))
+             (= (inc (m/epoch messenger)) (:epoch barrier)))
+
+        (m/replica-version messenger) (:replica-version barrier)
+       (inc (m/epoch messenger)) (:epoch barrier)
+        )
   (and (= (m/replica-version messenger) (:replica-version barrier))
        (= (inc (m/epoch messenger)) (:epoch barrier))))
 
@@ -163,53 +165,76 @@
        " STATE: " (barrier->str @(:barrier subscriber))))
 
 (defn handle-read-segments
-  [messenger results barrier subscriber-counter ticket-counter dst-task-id src-peer-id buffer offset length header]
+  [messenger results barrier ticket-counter dst-task-id src-peer-id buffer offset length header]
+  (info "HANDLE READ")
   (let [ba (byte-array length)
         _ (.getBytes buffer offset ba)
         message (messaging-decompress ba)
+        ;; FIXME, why 2?
         n-desired-messages 2]
-    ;(info "handling message " (into {} message))
+    (info "handling message " (type message) (into {} message)
+          (is-next-barrier? messenger message))
+    (info "COUNTY IS NOW" (count @results))
     (cond (>= (count @results) n-desired-messages)
           ControlledFragmentHandler$Action/ABORT
           (and (= (:dst-task-id message) dst-task-id)
                (= (:src-peer-id message) src-peer-id))
-          (cond (instance? onyx.types.Leaf message)
-                (let [message-id @subscriber-counter 
-                      ticket-id @ticket-counter]
-                  ;(swap! subscriber-counter inc)
-                  (cond ; (< message-id ticket-id)
+          (let [message-id @subscriber-counter 
+                ticket-id @ticket-counter]
+            (info "READ MESSAGE" message 
+                  "rep messenger"
+                  (m/replica-version messenger)
+                  "rep message"
+                  (:replica-version message))
+            (cond ; (< message-id ticket-id)
 
+                  ;; SKIP OLD MESSAGES
+                  (and (message? message)
+                       (nil? @barrier))
+                  ControlledFragmentHandler$Action/CONTINUE
 
-                        ;; SKIP OVER OLD MESSAGES
-                        (> (m/replica-version messenger)
-                           (:replica-version message))
-                        ControlledFragmentHandler$Action/CONTINUE
+                  (and (message? message)
+                       (not (nil? @barrier)))
+                  (do (when true ;(compare-and-set! ticket-counter ticket-id (inc ticket-id))
+                        ;; FIXME, rename :message to :segment in message
+                        (assert (:message message))
+                        (swap! results conj (:message message)))
+                      ControlledFragmentHandler$Action/CONTINUE)
 
-                        (= (m/replica-version messenger)
-                           (:replica-version message))
-                        ;(= message-id ticket-id)
-                        (do (when true ;(compare-and-set! ticket-counter ticket-id (inc ticket-id))
-                              (swap! results conj message))
-                            ControlledFragmentHandler$Action/CONTINUE)
+                  ;; SKIP OVER OLD BARRIERS
+                  (and (barrier? message)
+                       (> (m/replica-version messenger)
+                          (:replica-version message)))
+                  ControlledFragmentHandler$Action/CONTINUE
 
-                        ;; WAIT TO CATCH UP
-                        (< (m/replica-version messenger)
-                           (:replica-version message))
-                        ControlledFragmentHandler$Action/ABORT
-                        ; (> message-id ticket-id)
-                        ; ; (throw (ex-info "Shouldn't be possible to get ahead of a ticket id " {:message-id message-id :ticket-id ticket-id}))))
-                        (and (instance? onyx.types.Barrier message)
-                             (is-next-barrier? messenger message))
-                        (if (empty? @results)
-                          (do (reset! barrier message)
-                              ControlledFragmentHandler$Action/BREAK)  
-                          ControlledFragmentHandler$Action/ABORT)
+                  ;; WAIT TO CATCH UP
+                  (and (barrier? message)
+                       (< (m/replica-version messenger)
+                          (:replica-version message)))
+                  ControlledFragmentHandler$Action/ABORT
 
-                        ;(instance? onyx.types.BarrierAck message)
-                        ;ControlledFragmentHandler$Action/CONTINUE
+                  ; (> message-id ticket-id)
+                  ; ; (throw (ex-info "Shouldn't be possible to get ahead of a ticket id " {:message-id message-id :ticket-id ticket-id}))))
+                  (and (instance? onyx.types.Barrier message)
+                       (is-next-barrier? messenger message))
+                  (do
+                   (info "next barrier wooo" (into {} message) @results)
+                   (if (empty? @results)
+                     (do 
+                      (info "resetting barrier in sub")
+                      (reset! barrier message)
+                      ControlledFragmentHandler$Action/BREAK)  
+                     ControlledFragmentHandler$Action/ABORT))
 
-                        :else 
-                        (throw (ex-info "No other types of message exist."))))))))
+                  ;(instance? onyx.types.BarrierAck message)
+                  ;ControlledFragmentHandler$Action/CONTINUE
+
+                  :else 
+                  (throw (ex-info "No other types of message exist."))))
+          ;; FIXME, shouldn't blow past barriers with higher replica versions
+          ;; as this will lead to the data being reclaimed
+          :else
+          ControlledFragmentHandler$Action/CONTINUE)))
 
 (defn controlled-fragment-data-handler [f]
   (ControlledFragmentAssembler.
@@ -220,15 +245,23 @@
 ; (defn task-alive? [event]
 ;   (first (alts!! [(:kill-ch event) (:task-kill-ch event)] :default true)))
 
+
+;; NEXT, poll acks + barriers. If you hit a barrier, just ABORT.
+;; In read-messages, if you hit a barrier ack, abort
+
+;; In that case probably need a separate message reader for just barriers and acks
+
 (defn poll-messages [messenger sub-info]
-  (let [{:keys [src-peer-id dst-task-id subscription barrier]} sub-info
+  (info "POLLING " sub-info)
+  (let [{:keys [src-peer-id dst-task-id subscription barrier ticket-counter]} sub-info
         results (atom [])
-        counter (atom 0)
-        ticket-counter (atom 0)
+        ;; FIXME, maybe shouldn't reify a controlled fragment handler each time?
+        ;; Put the fragment handler in the sub info?
         fh (controlled-fragment-data-handler
             (fn [buffer offset length header]
-              (handle-read-segments messenger results barrier counter ticket-counter dst-task-id src-peer-id buffer offset length header)))]
+              (handle-read-segments messenger results barrier ticket-counter dst-task-id src-peer-id buffer offset length header)))]
     (.controlledPoll ^Subscription subscription ^ControlledFragmentHandler fh fragment-limit-receiver)
+    (info "POLL COUNT" (count @results))
     @results))
 
 (defn new-subscription 
@@ -396,11 +429,11 @@
     messenger
     )
 
-  (acks [messenger]
-    ;acks
-    messenger
-    
-    )
+  (all-acks-seen? 
+    [messenger]
+    (if (empty? (remove (comp deref :barrier-ack) ack-subscriptions))
+      (select-keys @(:barrier-ack (first ack-subscriptions)) 
+                   [:replica-version :epoch])))
 
   (flush-acks [messenger]
     (run! (fn [sub]
@@ -408,64 +441,35 @@
           (:subscriptions messenger))
     messenger)
 
-  (all-acks-seen? 
-    [messenger]
-    (if (empty? (remove (comp deref :barrier-ack) ack-subscriptions))
-      (select-keys @(:barrier-ack (first ack-subscriptions)) 
-                   [:replica-version :epoch])))
-
-  (segments [messenger]
-    @messages)
-
   (poll [messenger]
     ;; FIXME GOT POLL ACKs
     ;; Use sub poll counter
-    (let [subscriber (get subscriptions (mod (:read-index messenger) (count subscriptions)))
+    (let [subscriber (get subscriptions (mod @(:read-index messenger) (count subscriptions)))
           messages (poll-messages messenger subscriber)] 
-      (reset! (:messages messenger) (mapv t/input messages))
       (swap! (:read-index messenger) inc)
-      messenger))
+      (mapv t/input messages)))
 
   (offer-segments
     [messenger batch task-slots]
-    messenger
-    ; (reduce (fn [m msg] 
-    ;           (reduce (fn [m* task-slot] 
-    ;                     (write m* task-slot (->Message id 
-    ;                                                    (:dst-task-id task-slot) 
-    ;                                                    (:slot-id task-slot)
-    ;                                                    msg)))
-    ;                   m
-    ;                   task-slots)) 
-    ;         messenger
-    ;         batch)
-    
-    )
-
-  (recover [messenger]
-    
-    )
+    (reduce (fn [m msg] 
+              (reduce (fn [m* {:keys [dst-task-id slot-id] :as task-slot}] 
+                        ;; Should iterate / rotate over these, offer to each, then if none
+                        ;; accept we should return
+                        (let [p (first (get-in publications [dst-task-id slot-id]))] 
+                          (assert p)
+                          (write m* p (->Message id dst-task-id slot-id msg))))
+                      m
+                      task-slots)) 
+            messenger
+            batch))
 
   (poll-recover [messenger]
-    ;; Waits for the initial barriers when not 
-    
-    ;; read until got all barriers
-    ;; Check they all have the same restore information
-    ;; Return one restore information
-    
-    ;; Do loop of receive, all seen, emit, return {:epoch :replica-version}
-
-    ;; FIXME hard coded "batch size"
-    ; (println "Messages " 
-    ;          (m/replica-version messenger)
-    ;          (m/epoch messenger)
-    ;          (m/all-barriers-seen? messenger)
-    ;          (:message messenger))
-      (if (m/all-barriers-seen? messenger)
-        (let [recover (:recover @(:barrier (first (messenger->subscriptions messenger))))] 
-          (assert recover)
-          (assoc messenger :recover recover))
-        (assoc (m/poll messenger) :recover nil)))
+    (if (m/all-barriers-seen? messenger)
+      (let [recover (:recover @(:barrier (first subscriptions)))] 
+        (assert recover)
+        recover)
+      (do (m/poll messenger)
+          nil)))
 
   (emit-barrier [messenger]
     (onyx.messaging.messenger/emit-barrier messenger {}))
@@ -486,13 +490,12 @@
 
   (all-barriers-seen? 
     [messenger]
-    ; (println "Barriers seen:" 
-    ;       (empty? (remove #(found-next-barrier? messenger %) 
-    ;                       (messenger->subscriptions messenger)))
-    ;       (vec (remove #(found-next-barrier? messenger %) 
-    ;                                     (messenger->subscriptions messenger))))
+    (info "All barriers seen" subscriptions
+             (empty? (remove #(found-next-barrier? messenger %) 
+                             subscriptions))        
+             )
     (empty? (remove #(found-next-barrier? messenger %) 
-                    (messenger->subscriptions messenger))))
+                    subscriptions)))
 
   (emit-barrier-ack
     [messenger]
@@ -501,7 +504,6 @@
           (:subscriptions messenger))
     (as-> messenger mn 
       (reduce (fn [m p] 
-                ;(info "Acking barrier to " id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
                 (write m p (->BarrierAck id (:dst-task-id p) (m/replica-version mn) (m/epoch mn)))) 
               mn 
               (flatten-publications publications))
@@ -512,7 +514,6 @@
   (map->AeronMessenger {:id id 
                         :peer-config peer-config 
                         :messenger-group messenger-group 
-                        :messages (atom [])
                         :read-index (atom 0)}))
 
 

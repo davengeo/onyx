@@ -11,21 +11,23 @@
             [onyx.types :refer [map->Barrier map->BarrierAck]]
             [taoensso.timbre :as timbre :refer [debug info]]))
 
-(defn read-function-batch [{:keys [state id job-id task-map batch-size] :as event}]
-  ;; FIXME: Awful hack, already polled once
-  (let [message (:message (:messenger state))
-        messages (if message 
-                   (loop [messages [message] messenger (:messenger state)]
-                     (let [m (m/poll messenger)
-                           message (:message m)]
-                       (if message 
-                         (recur (conj messages message) m)
-                         messages)))
-                   [])]
+(defn read-function-batch [{:keys [state id job-id task-map batch-size batch] :as event}]
+  (let [messenger (:messenger state)
+        _ (info "POLL Starting with" (count batch))
+        ;; FIXME: Awful hack, already polled once
+        new-batch (loop [accum batch]
+                    (let [new-messages (m/poll messenger)]
+                      (if (empty? new-messages)
+                        accum
+                        (let [all (into accum new-messages)] 
+                          (if (>= (count all) batch-size)
+                            all
+                            (recur all))))))]
+    (info "MMMM receving messages " (:task event) new-batch)
     ;(info "Receiving messages" id (:onyx/name (:task-map event)) (m/all-barriers-seen? messenger) messages (= new-messenger messenger))
     ;(info "Done reading function batch" job-id (:onyx/name (:task-map event)) id messages)
     ;(println "FUNCTION BATCH " message)
-    {:batch messages}))
+    {:batch new-batch}))
 
 ;; move to another file?
 (defn read-input-batch

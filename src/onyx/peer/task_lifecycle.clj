@@ -141,7 +141,8 @@
             (>!! outbox-ch entry))))))
 
 (defn poll-messenger [event]
-  (update-in event [:state :messenger] m/poll))
+  ;; TODO, only poll this if blocked
+  (assoc event :batch (m/poll (:messenger (:state event)))))
 
 (defn emit-barriers [{:keys [task-type state id state] :as event}]
   ;; TODO, checkpoint state here - do it for all types
