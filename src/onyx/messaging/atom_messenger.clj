@@ -127,8 +127,8 @@
     (update-messenger-atom! messenger m/next-epoch)
     messenger)
 
-  (receive-acks [messenger]
-    (update-messenger-atom! messenger m/receive-acks)
+  (poll-acks [messenger]
+    (update-messenger-atom! messenger m/poll-acks)
     messenger)
 
   (poll [messenger]
@@ -140,10 +140,12 @@
     (:recover (update-messenger-atom! messenger m/poll-recover)))
 
   (offer-segments
-    [messenger messages task-slots]
-    (update-messenger-atom! messenger m/offer-segments messages task-slots)
-    messenger
-    )
+    [messenger batch task-slot]
+    (update-messenger-atom! messenger m/offer-segments batch task-slot)
+    task-slot)
+
+  (register-ticket [messenger sub-info]
+    messenger)
 
   (emit-barrier [messenger]
     (onyx.messaging.messenger/emit-barrier messenger {}))
@@ -170,7 +172,7 @@
     messenger
     ))
 
-(defmethod m/build-messenger :atom [peer-config messenger-group id]
+(defmethod m/build-messenger :atom [peer-config messenger-group id _]
   (map->AtomMessenger {:id id 
                        :peer-config peer-config 
                        :messenger-group messenger-group}))

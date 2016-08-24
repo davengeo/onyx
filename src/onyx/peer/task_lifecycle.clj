@@ -140,9 +140,11 @@
             (extensions/write-chunk log :exception inner job-id)
             (>!! outbox-ch entry))))))
 
-(defn poll-messenger [event]
-  ;; TODO, only poll this if blocked
-  (assoc event :batch (m/poll (:messenger (:state event)))))
+;; Only poll here for barriers if it's an input task and we won't read the barrier otherwise
+(defn poll-input-barriers [{:keys [task-type] :as event}]
+  (when (= task-type :input) 
+    (m/poll (:messenger (:state event))))
+  event)
 
 (defn emit-barriers [{:keys [task-type state id state] :as event}]
   ;; TODO, checkpoint state here - do it for all types
@@ -160,7 +162,10 @@
               {:keys [job-id task-id slot-id log]} event]
           ;(println "Writing state checkpoint " replica-version epoch (mapv ws/export-state windows-state))
           (when-not (empty? (:windows event)) 
-            (extensions/write-checkpoint log job-id replica-version epoch task-id slot-id :state (mapv ws/export-state (:windows-state state))))
+            ;; Make write-checkpoint just take an event
+            (extensions/write-checkpoint log job-id replica-version epoch task-id slot-id 
+                                         :state 
+                                         (mapv ws/export-state (:windows-state state))))
           (assoc event 
                  :state 
                  (cond-> (assoc state :messenger new-messenger)
@@ -213,10 +218,12 @@
       m)
     (dissoc m k)))
 
-(defn receive-acks [{:keys [task-type state] :as event}]
+
+
+(defn poll-acks [{:keys [task-type state] :as event}]
   (if (= :input task-type) 
     (let [{:keys [messenger barriers replica-completed]} state
-          new-messenger (m/receive-acks messenger)
+          new-messenger (m/poll-acks messenger)
           ack-result (m/all-acks-seen? new-messenger)]
       (info "Ack result " ack-result)
       (if ack-result
@@ -258,11 +265,10 @@
            (print-stage 1)
            (gen-lifecycle-id)
            (print-stage 2)
-           ;; Possibly should be below
-           (poll-messenger)
+           (poll-input-barriers)
            (emit-barriers)
            (print-stage 3)
-           (receive-acks)
+           (poll-acks)
            (print-stage 4)
            (lc/invoke-before-batch)
            (print-stage 5)
@@ -380,7 +386,7 @@
            filtered-windows (vec (wc/filter-windows windows (:name task)))
            window-ids (set (map :window/id filtered-windows))
            filtered-triggers (filterv #(window-ids (:trigger/window-id %)) triggers)
-           coordinator (coordinator/new-peer-coordinator log (:messenger-group component) opts id job-id group-ch)
+           coordinator (coordinator/new-peer-coordinator log (:messenger-group component) opts id job-id group-ch replica)
            pipeline-data (map->Event 
                           {:id id
                            :job-id job-id
@@ -464,6 +470,7 @@
           (ws/assign-windows last-event (:scheduler-event component)))
 
         (some-> last-event :state :coordinator coordinator/stop)
+        (some-> last-event :state :messenger component/stop)
         (some-> last-event :state :pipeline (op/stop last-event))
 
         (close! (:task-kill-ch component))

@@ -7,7 +7,7 @@
             [onyx.static.uuid :refer [random-uuid]]
             [onyx.api]))
 
-(def n-messages 100)
+(def n-messages 10000)
 
 (def out-chan (atom nil))
 
@@ -46,7 +46,7 @@
                      {:onyx/name :inc
                       :onyx/fn ::my-inc
                       :onyx/type :function
-                      ;:onyx/max-peers 4
+                      ;:onyx/max-peers 1
                       :onyx/batch-size batch-size}
 
                      {:onyx/name :out

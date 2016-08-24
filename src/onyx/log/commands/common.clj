@@ -127,17 +127,6 @@
        (filter (partial = :active))
        (seq)))
 
-; (defn find-physically-colocated-peers
-;   "Takes replica and a peer. Returns a set of peers, exluding this peer,
-;    that reside on the same physical machine."
-;   [replica peer]
-;   (let [peers (remove (fn [p] (= p peer)) (:peers replica))
-;         peer-site (m/get-peer-site replica peer)]
-;     (filter
-;      (fn [p]
-;        (= (m/get-peer-site replica p) peer-site))
-;      peers)))
-
 (defn job-covered? [replica job]
   (let [tasks (get-in replica [:tasks job])
         active? (partial at-least-one-active? replica)]

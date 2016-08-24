@@ -9,48 +9,28 @@
             [onyx.static.planning :as planning]
             [onyx.static.default-vals :refer [defaults arg-or-default]]))
 
-; (defn build-pick-peer-fn
-;   [replica job-id my-peer-id task-id task-map egress-peers slot-id->peer-id peer-config]
-;   (let [out-peers (egress-peers task-id)
-;         choose-f (cts/choose-downstream-peers replica job-id peer-config my-peer-id out-peers)]
-;     (cond (empty? out-peers)
-;           (fn [_] nil)
-
-;           (and (planning/grouping-task? task-map) (#{:continue :kill} (:onyx/flux-policy task-map)))
-;           (fn [hash-group] 
-;             (nth out-peers
-;                  (mod hash-group
-;                       (count out-peers))))
-
-;           (and (planning/grouping-task? task-map) (= :recover (:onyx/flux-policy task-map)))
-;           (let [n-peers (or (:onyx/n-peers task-map)
-;                             (:onyx/max-peers task-map))] 
-;             (fn [hash-group] 
-;               (slot-id->peer-id (mod hash-group n-peers))))
-
-;           (planning/grouping-task? task-map) 
-;           (throw (ex-info "Unhandled grouping-task flux-policy." task-map))
-
-;           :else
-;           (fn [hash-group]
-;             (choose-f hash-group)))))
-
-; (defn task-egress-publications [egress-tasks receivable-peers peer-sites site->publication]
-;   (->> egress-tasks
-;        (map (fn [[task-name task-id]]
-;               (let [;slot-id->peer-id (map-invert (get slot-ids task-id))
-;                     egress-peers (receivable-peers task-id)
-;                     publications (->> egress-peers 
-;                                       (map (comp :pub site->publication peer-sites))
-;                                       vec)] 
-;                 [task-id publications])))
-;        (into {})))
-
 (def all-slots -1)
 
+(defn state-task? [replica job-id task-id]
+  (get-in replica [:state-tasks job-id task-id]))
+
+(defn find-physically-task-peers
+  "Takes replica and a peer. Returns a set of peers, exluding this peer,
+   that reside on the same physical machine."
+  [replica peer-config peer job-id task-id]
+  (let [peer-site (m/get-peer-site peer-config)
+        task-peers (set (get-in replica [:allocations job-id task-id]))]
+    (->> (:peers replica) 
+         (filter (fn [p]
+                   (= (get-in replica [:peer-sites p]) 
+                      peer-site)))
+         (filter task-peers))))
+
+;; Maybe set shared tickets somewhere?
+;; Put with replica version, each one will run it, if any have set then don't reset for that replica version, job-id task-id
 (defn messenger-connections 
-  [{:keys [peer-state allocations peer-sites state-tasks task-slot-ids] :as replica} 
-   {:keys [workflow catalog task serialized-task job-id id] :as event}]
+  [{:keys [peer-state allocations peer-sites task-slot-ids] :as replica} 
+   {:keys [workflow catalog task serialized-task job-id id peer-opts] :as event}]
   (let [task-map (planning/find-task catalog task)
         {:keys [egress-tasks ingress-tasks]} serialized-task
         ;; FIXME: messenger is currently buggy when only using receivable peers
@@ -63,7 +43,7 @@
                          (mapcat (fn [task-id] 
                                    (let [peers (receivable-peers task-id)]
                                      (map (fn [peer-id]
-                                            (let [slot-id (if (get-in state-tasks [job-id task-id])
+                                            (let [slot-id (if (state-task? replica job-id task-id)
                                                             (get-in task-slot-ids [job-id task-id peer-id])
                                                             all-slots)] 
                                               (assert slot-id)
@@ -92,14 +72,16 @@
                           (mapcat (fn [task-id] 
                                     (let [peers (receivable-peers task-id)]
                                       (map (fn [peer-id]
-                                             ;; FIXME, TRUE ONLY IF HASH ROUTING!!!!
-                                             (let [slot-id (if (get-in state-tasks [job-id this-task-id])
+                                             (let [slot-id (if (state-task? replica job-id this-task-id)
                                                              (get-in task-slot-ids [job-id this-task-id id])
                                                              all-slots)] 
                                                (assert slot-id)
                                                {:src-peer-id peer-id
                                                 :dst-task-id [job-id this-task-id]
                                                 :slot-id slot-id
+                                                :aligned-peers (if (state-task? replica job-id this-task-id)
+                                                                 [id]
+                                                                 (find-physically-task-peers replica peer-opts id job-id this-task-id))
                                                 ;; Double check that peer site is correct
                                                 :site (peer-sites peer-id)}))
                                            peers))))
@@ -111,6 +93,7 @@
                                     (map (fn [peer-id]
                                            {:src-peer-id peer-id
                                             :dst-task-id [job-id this-task-id]
+                                            ;; Always uses slot-id
                                             :slot-id (get-in task-slot-ids [job-id this-task-id id])
                                             ;; Double check that peer site is correct
                                             :site (peer-sites peer-id)})
@@ -144,7 +127,8 @@
       (reduce m/remove-subscription m remove-subs)
       (reduce m/add-subscription m add-subs)
       (reduce m/remove-ack-subscription m remove-acker-subs)
-      (reduce m/add-ack-subscription m add-acker-subs))))
+      (reduce m/add-ack-subscription m add-acker-subs)
+      (reduce m/register-ticket m (:subs new-pub-subs)))))
 
 (defn assert-consistent-messenger-state [messenger pub-subs pre-post]
   (assert (= (count (:pubs pub-subs))

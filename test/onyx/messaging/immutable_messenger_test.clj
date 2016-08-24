@@ -109,20 +109,20 @@
 
             m-p1-acks (-> (last mss)
                           (switch-peer :p1)
-                          (m/receive-acks)
-                          (m/receive-acks)
-                          (m/receive-acks)
+                          (m/poll-acks)
+                          (m/poll-acks)
+                          (m/poll-acks)
 
                           )
             m-p2-acks (-> m-p1-acks 
                           (switch-peer :p2)
-                          (m/receive-acks)
-                          (m/receive-acks)
+                          (m/poll-acks)
+                          (m/poll-acks)
                           )
             m-p2-next-acks (-> m-p2-acks
                                (m/flush-acks)
-                               (m/receive-acks)
-                               (m/receive-acks))]
+                               (m/poll-acks)
+                               (m/poll-acks))]
         (is (m/all-acks-seen? m-p1-acks))
         (is (m/all-acks-seen? m-p2-acks))
         (is (m/all-acks-seen? m-p2-next-acks))))))

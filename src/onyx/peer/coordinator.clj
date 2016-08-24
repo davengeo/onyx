@@ -97,8 +97,10 @@
   (thread
    (try
     (let [;; Generate from peer-config
+          ;; FIXME: put in job data
           barrier-period-ms 500] 
       (loop [state state]
+        (println "Always up to date replica " @(:!replica state))
         (let [timeout-ch (timeout barrier-period-ms)
               {:keys [shutdown-ch allocation-ch]} state
               [new-replica ch] (alts!! [shutdown-ch allocation-ch timeout-ch])]
@@ -132,14 +134,16 @@
       ;; Probably bad to have to default to -1, though it will get updated immediately
       (m/set-replica-version (get-in replica [:allocation-version job-id] -1))))
 
-(defrecord PeerCoordinator [log messenger-group peer-config peer-id job-id messenger 
+(defrecord PeerCoordinator [log messenger-group peer-config peer-id job-id messenger !replica
                             group-ch allocation-ch shutdown-ch coordinator-thread]
   Coordinator
   (start [this] 
     (info "Starting coordinator on:" peer-id)
     (let [initial-replica (onyx.log.replica/starting-replica peer-config)
           ;; Probably do this in coordinator? or maybe not 
-          messenger (-> (m/build-messenger peer-config messenger-group [:coordinator peer-id])
+          messenger (-> (m/build-messenger peer-config messenger-group [:coordinator peer-id] 
+                                           ;; FIXME
+                                           (atom nil))
                         (start-messenger initial-replica job-id)) 
           allocation-ch (chan (dropping-buffer 1))
           shutdown-ch (promise-chan)]
@@ -152,6 +156,7 @@
                                    {:log log
                                     :peer-config peer-config 
                                     :messenger messenger 
+                                    :!replica !replica
                                     :prev-replica initial-replica 
                                     :job-id job-id
                                     :peer-id peer-id 
@@ -187,10 +192,11 @@
                    (get-in new-replica [:allocation-version job-id])))
         (next-replica new-replica)))))
 
-(defn new-peer-coordinator [log messenger-group peer-config peer-id job-id group-ch]
+(defn new-peer-coordinator [log messenger-group peer-config peer-id job-id group-ch !replica]
   (map->PeerCoordinator {:log log
                          :group-ch group-ch
                          :messenger-group messenger-group 
                          :peer-config peer-config 
                          :peer-id peer-id 
-                         :job-id job-id}))
+                         :job-id job-id
+                         :!replica !replica}))

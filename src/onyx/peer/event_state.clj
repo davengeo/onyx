@@ -75,7 +75,7 @@
         next-messenger (if (= task-type :output)
                          (m/emit-barrier-ack next-messenger)
                          (m/emit-barrier next-messenger {:recover recover}))
-        _ (println "RECOVER " recover task-type (:task-id event) (:slot-id event))
+        _ (info "RECOVER " recover task-type (:task-id event) (:slot-id event))
         windows-state (next-windows-state event recover)
         next-pipeline (next-pipeline-state (:pipeline prev-state) event recover)
         next-state (->EventState :processing replica next-messenger next-coordinator next-pipeline {} windows-state false)

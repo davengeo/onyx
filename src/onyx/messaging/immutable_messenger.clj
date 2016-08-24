@@ -147,7 +147,7 @@
                (unblocked? messenger subscriber) 
                (message? message))
           ;; If it's a message, update the subscriber position
-          {:message (:message message)
+          {:message (:payload message)
            :ticket next-ticket
            :subscriber (assoc subscriber :position ticket)}
 
@@ -276,7 +276,7 @@
     [messenger]
     (update-in messenger [:epoch id] inc))
 
-  (receive-acks [messenger]
+  (poll-acks [messenger]
     (update-in messenger 
                [:ack-subscriptions id]
                (fn [ss]
@@ -307,16 +307,13 @@
         true (rotate-subscriptions)
         message (assoc :message (t/input message)))))
 
-  (offer-segments
-    [messenger batch task-slots]
+  (offer-segments [messenger batch task-slot]
     (reduce (fn [m msg] 
-              (reduce (fn [m* task-slot] 
-                        (write m* task-slot (->Message id 
-                                                       (:dst-task-id task-slot) 
-                                                       (:slot-id task-slot)
-                                                       msg)))
-                      m
-                      task-slots)) 
+              (write m task-slot (->Message id 
+                                            (:dst-task-id task-slot) 
+                                            (:slot-id task-slot)
+                                            (m/replica-version m)
+                                            msg))) 
             messenger
             batch))
 
@@ -340,6 +337,9 @@
           (assert recover)
           (assoc messenger :recover recover))
         (assoc (m/poll messenger) :recover nil)))
+
+  (register-ticket [messenger sub-info]
+    messenger)
 
   (emit-barrier [messenger]
     (onyx.messaging.messenger/emit-barrier messenger {}))

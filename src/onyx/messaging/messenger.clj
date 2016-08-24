@@ -13,7 +13,7 @@
     (:onyx.messaging/impl peer-config)))
 
 (defmulti build-messenger 
-  (fn [peer-config messenger-group id]
+  (fn [peer-config messenger-group id !replica]
     (:onyx.messaging/impl peer-config)))
 
 (defprotocol MessengerGroup 
@@ -34,6 +34,7 @@
   (subscriptions [messenger])
   (ack-subscriptions [messenger])
 
+  (register-ticket [messenger sub-info])
   (poll [messenger])
   (poll-recover [messenger])
 
@@ -50,5 +51,5 @@
 
   ;; Try to remove multi phase receive/flush. 
   ;; Required for immutable testing version
-  (receive-acks [messenger])
+  (poll-acks [messenger])
   (flush-acks [messenger]))
