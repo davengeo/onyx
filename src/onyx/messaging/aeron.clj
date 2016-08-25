@@ -180,7 +180,7 @@
           "our replica"
           (m/replica-version messenger)
           (is-next-barrier? messenger message))
-    (cond (>= (count @results) n-desired-messages)
+    (cond (>= (count results) n-desired-messages)
           ControlledFragmentHandler$Action/ABORT
           (and (= (:dst-task-id message) dst-task-id)
                (= (:src-peer-id message) src-peer-id))
@@ -195,7 +195,7 @@
                  (when (compare-and-set! ticket ticket-val offset)
                    (do 
                     (assert (coll? (:payload message)))
-                    (swap! results into (:payload message))))
+                    (reduce conj! results (:payload message))))
                  ControlledFragmentHandler$Action/CONTINUE)
 
                 (and (barrier? message)
@@ -210,7 +210,7 @@
 
                 (and (barrier? message)
                      (is-next-barrier? messenger message))
-                (if (empty? @results)
+                (if (zero? (count results)) ;; empty? broken on transients
                   (do 
                    (reset! barrier message)
                    ControlledFragmentHandler$Action/BREAK)  
@@ -249,14 +249,14 @@
     ;; May not need to check for alignment here, can prob just do in :recover
     (if (and (subscription-aligned? sub-ticket)
              (unblocked? messenger sub-info))
-      (let [results (atom [])
+      (let [results (transient [])
             ;; FIXME, maybe shouldn't reify a controlled fragment handler each time?
             ;; Put the fragment handler in the sub info?
             fh (controlled-fragment-data-handler
                 (fn [buffer offset length header]
                   (handle-read-segments messenger results barrier (:ticket sub-ticket) dst-task-id src-peer-id buffer offset length header)))]
         (.controlledPoll ^Subscription subscription ^ControlledFragmentHandler fh fragment-limit-receiver)
-        @results)
+        (persistent! results))
       [])))
 
 (defn handle-poll-new-barrier
@@ -331,7 +331,7 @@
   (info "new subscriber for " job-id src-peer-id dst-task-id)
   (let [error-handler (reify ErrorHandler
                         (onError [this x] 
-                          ;; FIXME: inadequate
+                          ;; FIXME: Reboot peer
                           (taoensso.timbre/warn x "Aeron messaging subscriber error")))
         ctx (-> (Aeron$Context.)
                 (.errorHandler error-handler))
@@ -355,6 +355,7 @@
   (let [channel (mc/aeron-channel (:address site) (:port site))
         error-handler (reify ErrorHandler
                         (onError [this x] 
+                          ;; FIXME: Reboot peer
                           (taoensso.timbre/warn "Aeron messaging publication error:" x)))
         ctx (-> (Aeron$Context.)
                 (.errorHandler error-handler))
@@ -368,7 +369,6 @@
   (conj (or subscriptions []) sub-info))
 
 (defn remove-from-subscriptions [subscriptions {:keys [dst-task-id slot-id] :as sub-info}]
-  ;; FIXME close subscription
   (update-in subscriptions
              [dst-task-id slot-id]
              (fn [ss] 
@@ -378,7 +378,6 @@
                       ss))))
 
 (defn remove-from-publications [publications pub-info]
-  ;; FIXME close publication
   (filterv (fn [p] 
              (not= (select-keys pub-info [:src-peer-id :dst-task-id :slot-id :site]) 
                    (select-keys p [:src-peer-id :dst-task-id :slot-id :site])))
@@ -410,7 +409,8 @@
              (get-in replica [:allocation-version job-id]))))
 
 (defrecord AeronMessenger 
-  [messenger-group ticket-counters id replica-version epoch publications subscriptions ack-subscriptions read-index !replica]
+  [messenger-group ticket-counters id replica-version epoch 
+   publications subscriptions ack-subscriptions read-index !replica]
 
   component/Lifecycle
   (start [component]
@@ -428,10 +428,9 @@
             (.close ^Subscription (:subscription sub)))
           (concat subscriptions ack-subscriptions))
     (assoc component 
-           :ticket-counters nil
-           :replica-version nil :epoch nil
-           :publications nil :subscription nil 
-           :ack-subscriptions nil :read-index nil))
+           :ticket-counters nil :replica-version nil 
+           :epoch nil :publications nil :subscription nil 
+           :ack-subscriptions nil :read-index nil :!replica nil))
 
   m/Messenger
   (publications [messenger]
@@ -445,11 +444,7 @@
 
   (add-subscription
     [messenger sub-info]
-    (-> messenger 
-        (update :subscriptions add-to-subscriptions (new-subscription messenger sub-info))
-        ;; FIXME, switch to swap on shared atom
-        (update-in [:tickets (:src-peer-id sub-info) (:dst-task-id sub-info) (:slot-id sub-info)] 
-                   #(or % 0))))
+    (update messenger :subscriptions add-to-subscriptions (new-subscription messenger sub-info)))
 
   (register-ticket [messenger sub-info]
     (swap! ticket-counters 
@@ -598,219 +593,12 @@
       (m/next-epoch mn))))
 
 (defmethod m/build-messenger :aeron [peer-config messenger-group id !replica]
-  (println "Building aeron messenger")
   (map->AeronMessenger {:id id 
                         :peer-config peer-config 
                         :messenger-group messenger-group 
                         :!replica !replica
                         :read-index (atom 0)}))
 
-; (defrecord AeronMessenger
-;   [peer-group messenger-group publication-group publications
-;    send-idle-strategy compress-f monitoring short-ids acking-ch]
-;   component/Lifecycle
-
-;   (start [component]
-;     (taoensso.timbre/info "Starting Aeron Messenger")
-;     (let [config (:config peer-group)
-;           messenger-group (:messenger-group peer-group)
-;           publications (atom {})
-;           send-idle-strategy (:send-idle-strategy messenger-group)
-;           compress-f (:compress-f messenger-group)
-;           short-ids (atom {})]
-;       (assoc component
-;              :messenger-group messenger-group
-;              :short-ids short-ids
-;              :send-idle-strategy send-idle-strategy
-;              :publications publications
-;              :compress-f compress-f)))
-
-;   (stop [{:keys [short-ids publications] :as component}]
-;     (taoensso.timbre/info "Stopping Aeron Messenger")
-;     (run! (fn [{:keys [pub conn]}] 
-;             (.close pub)
-;             (.close conn)) 
-;           (vals @publications))
-
-;     (assoc component
-;            :messenger-group nil
-;            :send-idle-strategy nil
-;            :publications nil
-;            :short-ids nil
-;            :compress-f nil)))
-
-; #_(defmethod extensions/register-task-peer AeronMessenger
-;   [{:keys [short-ids] :as messenger}
-;    {:keys [aeron/peer-task-id]}
-;    task-buffer]
-;   #_(swap! short-ids assoc :peer-task-short-id peer-task-id))
-
-; #_(defmethod extensions/unregister-task-peer AeronMessenger
-;   [{:keys [short-ids] :as messenger}
-;    {:keys [aeron/peer-task-id]}]
-;   #_(swap! short-ids dissoc peer-task-id))
-
-; (defrecord AeronPeerGroup [opts subscribers ticketing-counters compress-f decompress-f send-idle-strategy]
-;   component/Lifecycle
-;   (start [component]
-;     (taoensso.timbre/info "Starting Aeron Peer Group")
-;     (let [embedded-driver? (arg-or-default :onyx.messaging.aeron/embedded-driver? opts)
-;           threading-mode (get-threading-model (arg-or-default :onyx.messaging.aeron/embedded-media-driver-threading opts))
-
-;           media-driver-context (if embedded-driver?
-;                                  (-> (MediaDriver$Context.) 
-;                                      (.threadingMode threading-mode)
-;                                      (.dirsDeleteOnStart true)))
-
-;           media-driver (if embedded-driver?
-;                          (MediaDriver/launch media-driver-context))
-
-;           bind-addr (common/bind-addr opts)
-;           external-addr (common/external-addr opts)
-;           port (:onyx.messaging/peer-port opts)
-;           poll-idle-strategy-config (arg-or-default :onyx.messaging.aeron/poll-idle-strategy opts)
-;           offer-idle-strategy-config (arg-or-default :onyx.messaging.aeron/offer-idle-strategy opts)
-;           send-idle-strategy (backoff-strategy poll-idle-strategy-config)
-;           receive-idle-strategy (backoff-strategy offer-idle-strategy-config)
-;           compress-f (or (:onyx.messaging/compress-fn opts) messaging-compress)
-;           decompress-f (or (:onyx.messaging/decompress-fn opts) messaging-decompress)
-;           ticketing-counters (atom {})
-;           ctx (.errorHandler (Aeron$Context.) no-op-error-handler)]
-;       (when embedded-driver? 
-;         (.addShutdownHook (Runtime/getRuntime) 
-;                           (Thread. (fn [] 
-;                                      (.deleteAeronDirectory ^MediaDriver$Context media-driver-context)))))
-;       (assoc component
-;              :bind-addr bind-addr
-;              :external-addr external-addr
-;              :media-driver-context media-driver-context
-;              :media-driver media-driver
-;              :compress-f compress-f
-;              :decompress-f decompress-f
-;              :ticketing-counters ticketing-counters
-;              :port port
-;              :send-idle-strategy send-idle-strategy)))
-
-;   (stop [{:keys [media-driver media-driver-context subscribers] :as component}]
-;     (taoensso.timbre/info "Stopping Aeron Peer Group")
-
-;     (when media-driver (.close ^MediaDriver media-driver))
-;     (when media-driver-context (.deleteAeronDirectory ^MediaDriver$Context media-driver-context))
-;     (assoc component
-;            :bind-addr nil :external-addr nil :media-driver nil :media-driver-context nil 
-;            :external-channel nil :compress-f nil :decompress-f nil :ticketing-counters nil 
-;            :send-idle-strategy nil)))
-
 ; (defmethod clojure.core/print-method AeronPeerGroup
 ;   [system ^java.io.Writer writer]
 ;   (.write writer "#<Aeron Peer Group>"))
-
-; (defn aeron-peer-group [opts]
-;   (map->AeronPeerGroup {:opts opts}))
-
-; (def possible-ids
-;   (set (map short (range -32768 32768))))
-
-; (defn available-ids [used]
-;   (clojure.set/difference possible-ids used))
-
-; (defn choose-id [hsh used]
-;   (when-let [available (available-ids used)]
-;     (nth (seq available) (mod hsh (count available)))))
-
-; (defn allocate-id [peer-id peer-site peer-sites]
-;   ;;; Assigns a unique id to each peer so that messages do not need
-;   ;;; to send the entire peer-id in a payload, saving 14 bytes per
-;   ;;; message
-;   (let [used-ids (->> (vals peer-sites)
-;                       (filter
-;                         (fn [s]
-;                           (= (:aeron/external-addr peer-site)
-;                              (:aeron/external-addr s))))
-;                       (map :aeron/peer-id)
-;                       set)
-;         id (choose-id peer-id used-ids)]
-;     (when-not id
-;       (throw (ex-info "Couldn't assign id. Ran out of aeron ids. 
-;                       This should only happen if more than 65356 virtual peers have been started up on a single external addr."
-;                       peer-site)))
-;     id))
-
-
-; (defn aeron-messenger [peer-config messenger-group]
-;   (map->AeronMessenger {:peer-config peer-config :messenger-group messenger-group}))
-
-; #_(defmethod m/peer-site AeronMessenger
-;   [messenger]
-;   {:aeron/external-addr (:external-addr (:messenger-group messenger))
-;    :aeron/port (:port (:messenger-group messenger))})
-
-; (defrecord AeronPeerConnection [channel stream-id peer-task-id])
-
-; ;; Define stream-id as only allowed stream
-; (def stream-id 1)
-
-; ; (defmethod m/connection-spec AeronMessenger
-; ;   [messenger peer-id event {:keys [aeron/external-addr aeron/port aeron/peer-task-id] :as peer-site}]
-; ;   (->AeronPeerConnection (mc/aeron-channel external-addr port) stream-id peer-task-id))
-
-
-
-
-
-; #_(defmethod m/close-partial-subscriber AeronMessenger
-;   [{:keys [messenger-group] :as messenger} partial-subscriber]
-;   (info "Closing partial subscriber")
-;   (.close ^Subscription (:subscription partial-subscriber))
-;   (.close ^Aeron (:conn partial-subscriber)))
-
-; (defn rotate [xs]
-;   (if (seq xs)
-;     (conj (into [] (rest xs)) (first xs))
-;     xs))
-
-; (defn task-alive? [event]
-;   (first (alts!! [(:kill-ch event) (:task-kill-ch event)] :default true)))
-
-; #_(defmethod m/receive-messages AeronMessenger
-;   [messenger {:keys [task-map id task-id task 
-;                                 subscription-maps]
-;                          :as event}]
-;   (let [rotated-subscriptions (swap! subscription-maps rotate)
-;         next-subscription (first (filter (comp nil? deref :barrier) rotated-subscriptions))]
-;     (if next-subscription
-;       (let [{:keys [subscription src-peer-id counter ticket-counter barrier]} next-subscription
-;             results (atom [])
-;             fh (controlled-fragment-data-handler
-;                  (fn [buffer offset length header]
-;                    (handle-message barrier results counter ticket-counter id task-id src-peer-id buffer offset length header)))]
-;         (.controlledPoll ^Subscription subscription ^ControlledFragmentHandler fh fragment-limit-receiver)
-;         @results)
-;       [])))
-
-
-
-; (defn write [^Publication pub ^UnsafeBuffer buf]
-;   ;; Needs an escape mechanism so it can break if a peer is shutdown
-;   ;; Needs an idle mechanism to prevent cpu burn
-;   (while (let [ret (.offer pub buf 0 (.capacity buf))] 
-;            (when (= ret Publication/CLOSED)
-;              (throw (Exception. "Wrote to closed publication.")))
-;            (neg? ret))
-;     (info "Re-offering message, session-id" (.sessionId pub))))
-
-; #_(defmethod m/offer-segments AeronMessenger
-;   [messenger publication batch]
-;   (doseq [b batch]
-;     (let [buf ^UnsafeBuffer (UnsafeBuffer. (messaging-compress b))]
-;       (write publication buf))))
-
-; #_(defmethod m/send-barrier AeronMessenger
-;   [messenger publication barrier]
-;   (let [buf ^UnsafeBuffer (UnsafeBuffer. (messaging-compress barrier))]
-;     (write publication buf)))
-
-; #_(defmethod m/ack-barrier AeronMessenger
-;   [messenger publication ack-message]
-;   (let [buf ^UnsafeBuffer (UnsafeBuffer. (messaging-compress ack-message))]
-;     (write publication buf)))

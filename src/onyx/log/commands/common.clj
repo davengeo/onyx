@@ -161,12 +161,20 @@
                              :timed-out))
     (warn (format "IMPORTANT: timed out stopping task %s on peer %s" (:task-id (:task-state state)) (:id state)))))
 
+(defn set-allocation-version! [state version]
+  (when-let [alloc-version (get-in state [:task-state :allocation-version])] 
+    (reset! alloc-version new-allocation-version)))
+
 (s/defn start-new-lifecycle [old :- os/Replica new :- os/Replica diff state scheduler-event :- os/PeerSchedulerEvent]
   (let [old-allocation (peer->allocated-job (:allocations old) (:id state))
-        new-allocation (peer->allocated-job (:allocations new) (:id state))]
+        new-allocation (peer->allocated-job (:allocations new) (:id state))
+        old-allocation-version (get-in old [:allocation-version (:job old-allocation)])
+        new-allocation-version (get-in new [:allocation-version (:job new-allocation)])]
     (if (not= old-allocation new-allocation)
       (do 
         (when (:lifecycle-stop-fn state)
+          ;; Signal that peer is done
+          (set-allocation-version! state new-allocation-version)
           (stop-lifecycle-safe! (:lifecycle-stop-fn state) scheduler-event state))
        (if (not (nil? new-allocation))
          (let [seal-ch (chan)
@@ -178,7 +186,8 @@
                            :peer-site peer-site
                            :seal-ch seal-ch
                            :kill-ch external-kill-ch
-                           :task-kill-ch internal-kill-ch}
+                           :task-kill-ch internal-kill-ch
+                           :allocation-version (atom new-allocation-version)}
                lifecycle (assoc-in ((:task-component-fn state) state task-state)
                                    [:task-lifecycle :scheduler-event]
                                    scheduler-event)
@@ -190,7 +199,9 @@
                   :lifecycle-stop-fn lifecycle-stop-fn
                   :task-state task-state))
          (assoc state :lifecycle nil :lifecycle-stop-fn nil :started-task-ch nil :task-state nil)))
-      state)))
+      (do
+       (set-allocation-version! state new-allocation-version)
+       state))))
 
 (defn promote-orphans [replica group-id]
   (assert group-id)
