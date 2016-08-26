@@ -163,7 +163,7 @@
 
 (defn set-allocation-version! [state version]
   (when-let [alloc-version (get-in state [:task-state :allocation-version])] 
-    (reset! alloc-version new-allocation-version)))
+    (reset! alloc-version alloc-version)))
 
 (s/defn start-new-lifecycle [old :- os/Replica new :- os/Replica diff state scheduler-event :- os/PeerSchedulerEvent]
   (let [old-allocation (peer->allocated-job (:allocations old) (:id state))
@@ -174,7 +174,7 @@
       (do 
         (when (:lifecycle-stop-fn state)
           ;; Signal that peer is done
-          (set-allocation-version! state new-allocation-version)
+          ;; FIXME  (set-allocation-version! state new-allocation-version)
           (stop-lifecycle-safe! (:lifecycle-stop-fn state) scheduler-event state))
        (if (not (nil? new-allocation))
          (let [seal-ch (chan)
@@ -200,7 +200,7 @@
                   :task-state task-state))
          (assoc state :lifecycle nil :lifecycle-stop-fn nil :started-task-ch nil :task-state nil)))
       (do
-       (set-allocation-version! state new-allocation-version)
+       ;; FIXME (set-allocation-version! state new-allocation-version)
        state))))
 
 (defn promote-orphans [replica group-id]

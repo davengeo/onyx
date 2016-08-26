@@ -395,7 +395,7 @@
     (check-outputs-in-order! peer-outputs)))
 
 (defspec deterministic-abs-test {;:seed X 
-                                 :num-tests (times 2000)}
+                                 :num-tests (times 2)}
   (for-all [uuid-seed (gen/no-shrink gen/int)
             n-jobs (gen/return 1) ;(gen/resize 4 gen/s-pos-int) 
             ;; Number of peers on each input task
