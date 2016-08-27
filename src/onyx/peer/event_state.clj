@@ -70,64 +70,77 @@
          (Thread/sleep 50)
          (recur))))))
 
-(defn recover-state [{:keys [job-id task-type windows] :as event} prev-state replica next-messenger next-coordinator recover]
+(defn recover-state [prev-state replica next-messenger next-coordinator recover]
   (let [old-replica (:replica prev-state)
+        {:keys [job-id task-type windows task-id slot-id] :as event} (:event prev-state)
         next-messenger (if (= task-type :output)
                          (m/emit-barrier-ack next-messenger)
                          (m/emit-barrier next-messenger {:recover recover}))
-        _ (info "RECOVER " recover task-type (:task-id event) (:slot-id event))
+        _ (info "RECOVER " recover task-type task-id slot-id)
         windows-state (next-windows-state event recover)
         next-pipeline (next-pipeline-state (:pipeline prev-state) event recover)
-        next-state (->EventState :processing replica next-messenger next-coordinator next-pipeline {} windows-state false)
-        next-event (assoc event :state next-state)]
+        next-state (->EventState :processing
+                                 replica
+                                 next-messenger
+                                 next-coordinator
+                                 next-pipeline
+                                 {}
+                                 windows-state
+                                 (:exhausted? prev-state)
+                                 (:init-event prev-state)
+                                 (:event prev-state))]
     (if-not (empty? windows) 
-      (ws/assign-windows next-event :recovered)
-      next-event)))
+      (ws/assign-windows next-state :recovered)
+      next-state)))
 
-(defn try-recover [event prev-state replica next-messenger next-coordinator]
-  (if-let [recover (fetch-recover event next-messenger)]
-    (recover-state event prev-state replica next-messenger next-coordinator recover)
-    (assoc event :state (assoc prev-state 
-                               :replica replica
-                               :state :recover 
-                               :messenger next-messenger 
-                               :coordinator next-coordinator))))
+(defn try-recover [prev-state replica next-messenger next-coordinator]
+  (if-let [recover (fetch-recover prev-state next-messenger)]
+    (recover-state prev-state replica next-messenger next-coordinator recover)
+    (assoc prev-state 
+           :replica replica
+           :state :recover 
+           :messenger next-messenger 
+           :coordinator next-coordinator)))
 
-(defn next-state-from-replica [{:keys [job-id task-type] :as event} prev-state replica]
+(defn next-state-from-replica [prev-state replica]
   ;; If new version do the get next barrier here?
   ;; then can do a rewind properly
   ;; Setup new messenger, new coordinator here
   ;; Then spin receiving until you can emit a barrier
   ;; If you hit shutdown 
-  (let [old-replica (:replica prev-state)
+  (let [{:keys [job-id task-type] :as event} (:event prev-state)
+        old-replica (:replica prev-state)
+        state (assoc prev-state :event event)
         next-messenger (ms/next-messenger-state! (:messenger prev-state) event old-replica replica)
         ;; Coordinator must be transitioned before recovery, as the coordinator
         ;; emits the barrier with the recovery information in 
         next-coordinator (coordinator/next-state (:coordinator prev-state) old-replica replica)]
-    (try-recover event prev-state replica next-messenger next-coordinator)))
+    (try-recover prev-state replica next-messenger next-coordinator)))
 
 (defmulti next-state 
-  (fn [{:keys [job-id task-type] :as event} prev-state replica]
-    (let [old-replica (:replica prev-state)
+  (fn [prev-state replica]
+    (let [job-id (get-in prev-state [:event :job-id])
+          _ (assert job-id)
+          old-replica (:replica prev-state)
           old-version (get-in old-replica [:allocation-version job-id])
           new-version (get-in replica [:allocation-version job-id])]
       [(:state prev-state)
        (= old-version new-version)])))
 
-(defmethod next-state [:initial true] [event prev-state replica]
-  (throw (Exception. (str "Invalid state" (pr-str replica) (pr-str (:replica prev-state))))))
+(defmethod next-state [:initial true] [prev-state replica]
+  (throw (Exception. (str "Invalid state " (pr-str replica) (pr-str (:replica prev-state))))))
 
-(defmethod next-state [:initial false] [event prev-state replica]
-  (next-state-from-replica event prev-state replica))
+(defmethod next-state [:initial false] [prev-state replica]
+  (next-state-from-replica prev-state replica))
 
-(defmethod next-state [:processing true] [event prev-state replica]
-  (assoc event :state (assoc prev-state :replica replica)))
+(defmethod next-state [:processing true] [prev-state replica]
+  (assoc prev-state :replica replica))
 
-(defmethod next-state [:processing false] [event prev-state replica]
-  (next-state-from-replica event prev-state replica))
+(defmethod next-state [:processing false] [prev-state replica]
+  (next-state-from-replica prev-state replica))
 
-(defmethod next-state [:recover true] [event prev-state replica]
-  (try-recover event prev-state replica (:messenger prev-state) (:coordinator prev-state)))
+(defmethod next-state [:recover true] [prev-state replica]
+  (try-recover prev-state replica (:messenger prev-state) (:coordinator prev-state)))
 
-(defmethod next-state [:recover false] [event prev-state replica]
-  (next-state-from-replica event prev-state replica))
+(defmethod next-state [:recover false] [prev-state replica]
+  (next-state-from-replica prev-state replica))

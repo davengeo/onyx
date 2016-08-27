@@ -11,8 +11,9 @@
             [onyx.types :refer [map->Barrier map->BarrierAck]]
             [taoensso.timbre :as timbre :refer [debug info]]))
 
-(defn read-function-batch [{:keys [state id job-id task-map batch-size] :as event}]
-  (let [messenger (:messenger state)
+(defn read-function-batch [{:keys [event] :as state}]
+  (let [{:keys [id job-id task-map batch-size]} event
+        messenger (:messenger state)
         new-batch (loop [accum []]
                     (let [new-messages (m/poll messenger)]
                       (if (empty? new-messages)
@@ -25,15 +26,16 @@
     ;(info "Receiving messages" id (:onyx/name (:task-map event)) (m/all-barriers-seen? messenger) messages (= new-messenger messenger))
     ;(info "Done reading function batch" job-id (:onyx/name (:task-map event)) id messages)
     ;(println "FUNCTION BATCH " message)
-    {:batch new-batch}))
+    (assoc-in state [:event :batch] new-batch)))
 
 ;; move to another file?
-(defn read-input-batch
-  [{:keys [task-map state id job-id task-id] :as event}]
-  (let [batch-size (:onyx/batch-size task-map)
+(defn read-input-batch [{:keys [event pipeline] :as state}]
+  (let [{:keys [task-map state id job-id task-id]} event
+        batch-size (:onyx/batch-size task-map)
         [next-reader batch] 
-        (loop [reader (:pipeline state)
+        (loop [reader pipeline
                outgoing []]
+          (assert pipeline)
           (if (< (count outgoing) batch-size) 
             (let [next-reader (oi/next-state reader event)
                   segment (oi/segment next-reader)]
@@ -44,5 +46,6 @@
             [reader outgoing]))]
     ;(when-not (empty? batch) (println "INPUT BATCH " batch))
     (info "Reading batch " job-id task-id "peer-id" id batch)
-    {:state (assoc state :pipeline next-reader)
-     :batch batch}))
+    (-> state
+        (assoc :pipeline next-reader)
+        (assoc-in [:event :batch] batch))))

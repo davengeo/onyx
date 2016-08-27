@@ -252,9 +252,9 @@
         windows-state))
 
 (defn process-segment
-  [{:keys [task-state grouping-fn monitoring state results] :as event}
-   state-event]
-  (let [grouped? (not (nil? grouping-fn))
+  [state state-event]
+  (let [{:keys [task-state grouping-fn monitoring results] :as event} (:event state)
+        grouped? (not (nil? grouping-fn))
         state-event* (assoc state-event :grouped? grouped?)
         start-time (System/currentTimeMillis)
         updated-states (reduce 
@@ -265,12 +265,15 @@
                              (fire-state-event windows-state* state-event**)))
                          (:windows-state state)
                          (:segments results))]
-    (assoc-in event [:state :windows-state] updated-states)))
+    (assoc state :windows-state updated-states)))
 
-(defn process-event [{:keys [state] :as event} state-event]
-  (assoc-in event [:state :windows-state] (fire-state-event (:windows-state state) state-event)))
+(defn process-event [{:keys [windows-state] :as state} state-event]
+  (assoc state :windows-state (fire-state-event windows-state state-event)))
 
-(defn assign-windows [event event-type]
+(defn assign-windows [state event-type]
+  (println "ASSIGN")
+  (println "state" state)
+  (println "event-type" event-type)
   (if (= :new-segment event-type)
-    (lc/invoke-assign-windows process-segment event (new-state-event event-type event))
-    (lc/invoke-assign-windows process-event event (new-state-event event-type event))))
+    (lc/invoke-assign-windows process-segment state (new-state-event event-type (:event state)))
+    (lc/invoke-assign-windows process-event state (new-state-event event-type (:event state)))))

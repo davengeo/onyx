@@ -250,26 +250,26 @@
       (let [task-component (get-in group (task-component-path peer-id))] 
         ;; If we can access the event, it means the peer has started its task lifecycle
         (if task-component
-          (let [init-event (get-in @task-component [:task-lifecycle :event])
+          (let [init-state (get-in @task-component [:task-lifecycle :state])
                 current-replica (:replica (:state group))
                 new-allocation (common/peer->allocated-job (:allocations current-replica) peer-id)
-                prev-event (or (get-in @task-component [:task-lifecycle :prev-event])
-                                      init-event)
-                prev-replica-version (m/replica-version (:messenger (:state prev-event)))
-                new-event (case command
-                            :task-iteration (tl/event-iteration init-event (:state prev-event) current-replica)
-                            :periodic-barrier (assoc-in prev-event 
-                                                        [:state :coordinator] 
-                                                        (let [coordinator (:coordinator (:state prev-event))]
-                                                          (if (coord/started? coordinator) 
-                                                            (assoc coordinator 
-                                                                   :coordinator-thread 
-                                                                   (onyx.peer.coordinator/coordinator-action
-                                                                     :periodic-barrier
-                                                                     (:coordinator-thread coordinator)
-                                                                     (:prev-replica (:coordinator-thread coordinator))))
-                                                            coordinator))))]
-            (swap! task-component assoc-in [:task-lifecycle :prev-event] new-event)
+                prev-state (or (get-in @task-component [:task-lifecycle :prev-state])
+                               init-state)
+                prev-replica-version (m/replica-version (:messenger prev-state))
+                new-state (case command
+                            :task-iteration (tl/state-iteration prev-state current-replica)
+                            :periodic-barrier (assoc prev-state 
+                                                     :coordinator 
+                                                     (let [coordinator (:coordinator prev-state)]
+                                                       (if (coord/started? coordinator) 
+                                                         (assoc coordinator 
+                                                                :coordinator-thread 
+                                                                (onyx.peer.coordinator/coordinator-action
+                                                                  :periodic-barrier
+                                                                  (:coordinator-thread coordinator)
+                                                                  (:prev-replica (:coordinator-thread coordinator))))
+                                                         coordinator))))]
+            (swap! task-component assoc-in [:task-lifecycle :prev-state] new-state)
             (assoc groups 
                    group-id 
                    (-> group
@@ -277,11 +277,11 @@
                        (update-in [:peer-state peer-id (:task new-allocation) :written]
                                   (fn [batches]
                                     (let [written (if (= command :task-iteration) 
-                                                    (seq (:null/not-written new-event)))]  
+                                                    (seq (:null/not-written (:event new-state))))]  
                                       (cond-> (vec batches)
 
                                         (not= prev-replica-version 
-                                              (m/replica-version (:messenger (:state new-event))))
+                                              (m/replica-version (:messenger new-state)))
                                         (conj [:reset-messenger])
 
                                         written 
@@ -385,6 +385,7 @@
                                                  (java.util.UUID. (.nextLong @random-gen)
                                                                   (.nextLong @random-gen)))
                   onyx.peer.coordinator/start-coordinator! (fn [state] state)
+                  ;; FIXME fetch recover signature should be state
                   onyx.peer.event-state/fetch-recover (fn [event messenger]
                                                         (loop [r (m/poll-recover messenger) n 100]
                                                           (if r
@@ -414,7 +415,7 @@
                                                                              scheduler-event))))
                   ;; Task overrides
                   tl/final-event (fn [component] 
-                                   (:prev-event component))
+                                   (:prev-state component))
                   tl/backoff-until-task-start! (fn [_])
                   tl/backoff-until-covered! (fn [_])
                   tl/backoff-when-drained! (fn [_])
