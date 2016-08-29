@@ -56,13 +56,8 @@
    state 
    grouping-fn uniqueness-task? windowed-task? uniqueness-key task-state task->group-by-fn])
 
-(defrecord EventState [state replica messenger coordinator pipeline barriers windows-state exhausted?
-                       
-                       init-event
-                       event
-
-                       
-                       ])
+;; FIXME RENAME
+(defrecord EventState [lifecycle replica messenger coordinator pipeline barriers windows-state exhausted? init-event event])
 
 (defrecord Message [src-peer-id dst-task-id slot-id replica-version payload])
 
@@ -101,5 +96,4 @@
 (defrecord MonitorTaskEventCount [event count])
 
 (defrecord MonitorEventLatencyBytes [event latency bytes])
-
 

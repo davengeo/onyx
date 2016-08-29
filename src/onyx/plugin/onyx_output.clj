@@ -28,6 +28,7 @@
                    (task-alive? kill-ch task-kill-ch))
       (recur))))
 
+;; separate, prepare outputs
 ;; FIXME split out destinations for retry, may need to switch destinations, can'd do every thning in a single offer
 ;; TODO: be smart about sending messages to multiple co-located tasks
 ;; TODO: send more than one message at a time

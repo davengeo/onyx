@@ -98,7 +98,7 @@
     (recover-state prev-state replica next-messenger next-coordinator recover)
     (assoc prev-state 
            :replica replica
-           :state :recover 
+           :lifecycle :recover 
            :messenger next-messenger 
            :coordinator next-coordinator)))
 
@@ -124,13 +124,13 @@
           old-replica (:replica prev-state)
           old-version (get-in old-replica [:allocation-version job-id])
           new-version (get-in replica [:allocation-version job-id])]
-      [(:state prev-state)
+      [(:lifecycle prev-state)
        (= old-version new-version)])))
 
-(defmethod next-state [:initial true] [prev-state replica]
+(defmethod next-state [:init true] [prev-state replica]
   (throw (Exception. (str "Invalid state " (pr-str replica) (pr-str (:replica prev-state))))))
 
-(defmethod next-state [:initial false] [prev-state replica]
+(defmethod next-state [:init false] [prev-state replica]
   (next-state-from-replica prev-state replica))
 
 (defmethod next-state [:processing true] [prev-state replica]

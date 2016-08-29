@@ -257,7 +257,7 @@
                                init-state)
                 prev-replica-version (m/replica-version (:messenger prev-state))
                 new-state (case command
-                            :task-iteration (tl/state-iteration prev-state current-replica)
+                            :task-iteration (tl/next-state prev-state current-replica)
                             :periodic-barrier (assoc prev-state 
                                                      :coordinator 
                                                      (let [coordinator (:coordinator prev-state)]
@@ -278,6 +278,16 @@
                                   (fn [batches]
                                     (let [written (if (= command :task-iteration) 
                                                     (seq (:null/not-written (:event new-state))))]  
+                                      (assert (or (empty? written) 
+                                                   (= #{(m/replica-version (:messenger new-state))}
+                                                 (set (map :replica written))))
+                                              
+                                              [command
+                                               
+                                               #{(m/replica-version (:messenger new-state))}
+                                                 (set (map :replica written))]
+                                              )
+
                                       (cond-> (vec batches)
 
                                         (not= prev-replica-version 
@@ -385,13 +395,12 @@
                                                  (java.util.UUID. (.nextLong @random-gen)
                                                                   (.nextLong @random-gen)))
                   onyx.peer.coordinator/start-coordinator! (fn [state] state)
-                  ;; FIXME fetch recover signature should be state
-                  onyx.peer.event-state/fetch-recover (fn [event messenger]
-                                                        (loop [r (m/poll-recover messenger) n 100]
-                                                          (if r
-                                                            r
-                                                            (if (pos? n) 
-                                                              (recur (m/poll-recover messenger) (dec n))))))
+                  onyx.peer.task-lifecycle/fetch-recover (fn [state]
+                                                           (loop [r (m/poll-recover (:messenger state)) n 100]
+                                                             (if r
+                                                               r
+                                                               (if (pos? n) 
+                                                                 (recur (m/poll-recover (:messenger state)) (dec n))))))
                   onyx.peer.coordinator/next-replica (fn [coordinator replica]
                                                        (if (coord/started? coordinator)
                                                          ;; store all our state in the coordinator thread key 
@@ -400,7 +409,7 @@
                                                            (assoc coordinator
                                                                   :coordinator-thread 
                                                                   (onyx.peer.coordinator/coordinator-action 
-                                                                    :reallocation (:coordinator-thread coordinator) replica)))
+                                                                   :reallocation (:coordinator-thread coordinator) replica)))
                                                          coordinator))
                   ;; Make start and stop threadless / linearizable
                   ;; Try to get rid of the component atom here
