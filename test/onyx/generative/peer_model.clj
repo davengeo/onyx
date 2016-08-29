@@ -414,7 +414,7 @@
                                                                              [:task-lifecycle :scheduler-event] 
                                                                              scheduler-event))))
                   ;; Task overrides
-                  tl/final-event (fn [component] 
+                  tl/final-state (fn [component] 
                                    (:prev-state component))
                   tl/backoff-until-task-start! (fn [_])
                   tl/backoff-until-covered! (fn [_])

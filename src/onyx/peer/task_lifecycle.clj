@@ -124,11 +124,6 @@
         _ (assert task-type)
         _ (assert (:apply-fn (:event state)))
         f (get input-readers task-type)]
-    (assert f)
-    (println "applying to " state)
-    (assert (:event 
-     (f state)         
-              ))
     (f state))
 
   ; (lc/invoke-read-batch 
@@ -148,7 +143,7 @@
             (lc/invoke-write-batch 
               (s/fn :- os/Event 
                 [event :- os/Event]
-                (let [rets (merge event (oo/write-batch pipeline event))]
+                (let [rets (merge event (oo/write-batch pipeline state))]
                   (trace (:log-prefix event) (format "Wrote %s segments" (count (:segments (:results rets)))))
                   rets))
               event))))
@@ -199,20 +194,20 @@
                      :completed? (oi/completed? (:pipeline state))})))
       state)))
 
-(defn ack-barriers [{:keys [task-type state] :as event}]
-  (if (and (= :output task-type) 
-           (m/all-barriers-seen? (:messenger state)))
+(defn ack-barriers [{:keys [event messenger] :as state}]
+  (if (and (= :output (:task-type event)) 
+           (m/all-barriers-seen? messenger))
     ;; Add me later
     ;;(extensions/write-checkpoint log job-id replica-version epoch task-id slot-id :state {:3 4})
-    (assoc-in event [:state :messenger] (m/emit-barrier-ack (:messenger state)))
-    event))
+    (assoc state :messenger (m/emit-barrier-ack messenger))
+    state))
 
 ;; FIXME: create an issue to reduce number of times exhaust input is written
 ;; Should check whether it's already exhausted for this allocation version
 ;; Maybe can use an atom though
-(s/defn complete-job [{:keys [job-id task-id state] :as event} :- os/Event]
-  (throw (Exception.))
-  (let [entry (entry/create-log-entry :exhaust-input {:replica-version (m/replica-version (:messenger state))
+(defn complete-job [{:keys [event messenger] :as state}] ;; Fixme StateMonad
+  (let [{:keys [job-id task-id]} event
+        entry (entry/create-log-entry :exhaust-input {:replica-version (m/replica-version messenger)
                                                       ;:epoch (m/epoch (:messenger state))
                                                       :job job-id 
                                                       :task task-id})]
@@ -224,7 +219,7 @@
 
 (s/defn assign-windows :- os/Event
   [state]
-  (if-not (empty?  (:windows (:event state)))
+  (if-not (empty? (:windows (:event state)))
     (ws/assign-windows state :new-segment)
     state))
 
@@ -243,13 +238,36 @@
       m)
     (dissoc m k)))
 
-
+; (defn poll-acks [{:keys [event messenger barriers] :as state}]
+;   (let [{:keys [task-type]} event] 
+;     (if (= :input task-type) 
+;       (let [_ (m/poll-acks messenger)
+;             ack-result (m/all-acks-seen? messenger)]
+;       (if ack-result
+;         (let [{:keys [replica-version epoch]} ack-result]
+;           (if-let [barrier (get-in barriers [replica-version epoch])] 
+;             (do
+;              ;(println "Acking result, barrier:" (into {} barrier) replica-version epoch)
+;              ;(println barriers)
+;              (let [{:keys [job-id task-id slot-id log]} event
+;                    completed? (:completed? barrier)] 
+;                (when (and completed? (not (:exhausted? state)))
+;                  (complete-job state)
+;                  (backoff-when-drained! state))
+;                (do (m/flush-acks messenger)
+;                    (-> state
+;                        (assoc :exhausted? completed?)
+;                        (update :barriers dissoc-in [replica-version epoch])))))
+;             ;; Maybe shouldn't have flush-acks here
+;             (do (m/flush-acks messenger)
+;                 state)))
+;         state))
+;     state)))
 
 (defn poll-acks [{:keys [event messenger barriers] :as state}]
-  (let [{:keys [task-type]} event] 
-    (if (= :input task-type) 
-      (let [new-messenger (m/poll-acks messenger)
-            ack-result (m/all-acks-seen? new-messenger)]
+  (if (= :input (:task-type event)) 
+    (let [new-messenger (m/poll-acks messenger)
+          ack-result (m/all-acks-seen? new-messenger)]
       (if ack-result
         (let [{:keys [replica-version epoch]} ack-result]
           (if-let [barrier (get-in barriers [replica-version epoch])] 
@@ -268,7 +286,7 @@
             ;; Maybe shouldn't have flush-acks here
             (assoc state :messenger (m/flush-acks new-messenger))))
         (assoc state :messenger new-messenger)))
-    state)))
+    state))
 
 (defn print-stage [stage state]
   ;; When replica-version is set, set :barriers-seen? on messenger.
@@ -282,6 +300,9 @@
 
 (defn before-batch [state]
   (update state :event lc/invoke-before-batch))
+
+(defn after-batch [state]
+  (update state :event lc/invoke-after-batch))
 
 (defn state-iteration 
   [prev-state replica-val]
@@ -311,7 +332,7 @@
            (write-batch)
            (print-stage 9)
            ;(flow-retry-segments)
-           (lc/invoke-after-batch)
+           (after-batch)
            (print-stage 10)
            (ack-barriers))
       next-state)))
@@ -354,11 +375,6 @@
       (catch Throwable e
         (throw e)))))
 
-(defn add-pipeline [{:keys [task-map] :as event}]
-  (assoc-in event 
-            [:state :pipeline] 
-            ))
-
 (defrecord TaskInformation 
   [log job-id task-id workflow catalog task flow-conditions windows triggers lifecycles metadata]
   component/Lifecycle
@@ -398,7 +414,7 @@
 (defn start-task-lifecycle! [state ex-f]
   (thread (run-task-lifecycle state ex-f)))
 
-(defn final-event [component]
+(defn final-state [component]
   (<!! (:task-lifecycle-ch component)))
 
 (defrecord TaskLifeCycle
@@ -503,13 +519,14 @@
       (close! (:kill-ch component))
 
       ;; FIXME: should try to get last STATE here
-      (let [last-event (final-event component)]
-        (when-not (empty? (:triggers event))
-          (ws/assign-windows last-event (:scheduler-event component)))
+      (let [last-state (final-state component)
+            last-event (:event last-state)]
+        (when-not (empty? (:triggers last-event))
+          (ws/assign-windows last-state (:scheduler-event component)))
 
-        (some-> last-event :state :coordinator coordinator/stop)
-        (some-> last-event :state :messenger component/stop)
-        (some-> last-event :state :pipeline (op/stop last-event))
+        (some-> last-state :coordinator coordinator/stop)
+        (some-> last-state :messenger component/stop)
+        (some-> last-state :pipeline (op/stop event))
 
         (close! (:task-kill-ch component))
 
@@ -524,6 +541,11 @@
 
     (assoc component
            :event nil
+           :state nil
+           :log-prefix nil
+           :task-information nil
+           :task-kill-ch nil
+           :kill-ch nil
            :task-lifecycle-ch nil)))
 
 (defn task-lifecycle [peer task]

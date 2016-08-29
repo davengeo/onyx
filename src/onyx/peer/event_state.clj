@@ -61,7 +61,7 @@
       (oi/recover pipeline stored))
     pipeline))
 
-(defn fetch-recover [event messenger]
+(defn fetch-recover [{:keys [event] :as state} messenger]
   (loop []
     (if-let [recover (m/poll-recover messenger)]
       recover

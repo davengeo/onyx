@@ -30,7 +30,7 @@
 
 ;; move to another file?
 (defn read-input-batch [{:keys [event pipeline] :as state}]
-  (let [{:keys [task-map state id job-id task-id]} event
+  (let [{:keys [task-map id job-id task-id]} event
         batch-size (:onyx/batch-size task-map)
         [next-reader batch] 
         (loop [reader pipeline

@@ -261,6 +261,7 @@
                          (fn [windows-state* message]
                            (let [segment (:message message)
                                  state-event** (cond-> (assoc state-event* :segment segment)
+                                                 
                                                  grouped? (assoc :group-key (grouping-fn segment)))]
                              (fire-state-event windows-state* state-event**)))
                          (:windows-state state)
@@ -270,10 +271,8 @@
 (defn process-event [{:keys [windows-state] :as state} state-event]
   (assoc state :windows-state (fire-state-event windows-state state-event)))
 
-(defn assign-windows [state event-type]
-  (println "ASSIGN")
-  (println "state" state)
-  (println "event-type" event-type)
-  (if (= :new-segment event-type)
-    (lc/invoke-assign-windows process-segment state (new-state-event event-type (:event state)))
-    (lc/invoke-assign-windows process-event state (new-state-event event-type (:event state)))))
+(defn assign-windows [{:keys [messenger event] :as state} event-type]
+  (let [state-event (new-state-event event-type (assoc event :messenger messenger))] 
+    (if (= :new-segment event-type)
+      (lc/invoke-assign-windows process-segment state state-event)
+      (lc/invoke-assign-windows process-event state state-event))))

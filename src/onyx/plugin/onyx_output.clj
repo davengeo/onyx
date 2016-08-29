@@ -31,9 +31,8 @@
 ;; FIXME split out destinations for retry, may need to switch destinations, can'd do every thning in a single offer
 ;; TODO: be smart about sending messages to multiple co-located tasks
 ;; TODO: send more than one message at a time
-(defn send-messages [{:keys [state id job-id task-id egress-tasks task->group-by-fn kill-ch task-kill-ch]} segments]
-  (let [{:keys [replica messenger]} state
-        grouped (group-by :flow segments)
+(defn send-messages [messenger replica {:keys [id job-id task-id egress-tasks task->group-by-fn kill-ch task-kill-ch]} segments]
+  (let [grouped (group-by :flow segments)
         job-task-id-slots (get-in replica [:task-slot-ids job-id])]
     (run! (fn [[flow messages]]
             (run! (fn [{:keys [message]}]
@@ -52,10 +51,11 @@
 
 (extend-type Object
   OnyxOutput
-  (write-batch [this {:keys [results state] :as event}]
-    (let [segments (:segments results)]
+  (write-batch [this {:keys [event replica messenger] :as state}]
+    (let [results (:results event)
+          segments (:segments results)]
       (info "Writing batch " 
             (m/replica-version (:messenger state)) (m/epoch (:messenger state)) 
             (:task-name event) (:task-type event) (vec (:segments results)))
-      (send-messages event segments)
+      (send-messages messenger replica event segments)
       {})))

@@ -66,7 +66,7 @@
 (def number (atom 0))
 (def key-slot-tracker (atom {}))
 
-(defn update-state-atom! [event window trigger state-event extent-state]
+(defn update-state-atom! [{:keys [messenger] :as event} window trigger state-event extent-state]
   #_(when-not (= :job-completed (:event-type state-event)) 
     ;(println "Extent state now " extent-state)
     (let [{:keys [job-id id egress-tasks]} event 
@@ -90,7 +90,7 @@
   (when (or (= :recovered (:event-type state-event))
             (= :new-segment (:event-type state-event))) 
     ;(println "extent state is " (:group-key state-event) extent-state)
-    (let [replica-version (m/replica-version (:messenger (:state event)))
+    (let [replica-version (m/replica-version messenger)
           value [(java.util.Date.) extent-state]
           dupes (filter (fn [[k v]] (> 1 (count v))) (group-by identity extent-state))] 
 
@@ -395,7 +395,7 @@
     (check-outputs-in-order! peer-outputs)))
 
 (defspec deterministic-abs-test {;:seed X 
-                                 :num-tests (times 2)}
+                                 :num-tests (times 2000)}
   (for-all [uuid-seed (gen/no-shrink gen/int)
             n-jobs (gen/return 1) ;(gen/resize 4 gen/s-pos-int) 
             ;; Number of peers on each input task
