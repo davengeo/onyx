@@ -148,12 +148,12 @@
   (register-ticket [messenger sub-info]
     messenger)
 
-  (emit-barrier [messenger]
-    (onyx.messaging.messenger/emit-barrier messenger {}))
+  (emit-barrier [messenger publication]
+    (onyx.messaging.messenger/emit-barrier messenger publication {}))
 
   (emit-barrier
-    [messenger barrier-opts]
-    (update-messenger-atom! messenger m/emit-barrier barrier-opts)
+    [messenger publication barrier-opts]
+    (update-messenger-atom! messenger m/emit-barrier publication barrier-opts)
     messenger)
   
   (unblock-subscriptions! 

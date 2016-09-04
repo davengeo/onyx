@@ -177,6 +177,9 @@
   (m/poll messenger)
   state)
 
+(defn emit-all-barriers [messenger]
+  (reduce m/emit-barrier messenger (m/publications messenger)))
+
 (defn emit-barriers [{:keys [event messenger] :as state}]
   ;; TODO, checkpoint state here - do it for all types
   ;; But only if all barriers are seen, or if we're an input and we're going to emit
@@ -187,8 +190,10 @@
   ;; checkpoint value here, but then modify the ack state when it actually gets acked.
   (let [{:keys [task-type id]} event] 
     (if (and (#{:function :input} task-type) (m/all-barriers-seen? messenger))
-      (let [new-messenger (-> messenger 
-                              (m/emit-barrier)
+      (let [publications (m/publications messenger)
+            new-messenger (-> messenger 
+                              (m/next-epoch)
+                              (emit-all-barriers)
                               (m/unblock-subscriptions!))
             replica-version (m/replica-version new-messenger)
             epoch (m/epoch new-messenger)
@@ -330,31 +335,35 @@
 (defn fetch-recover [{:keys [event messenger] :as state}]
   (m/poll-recover messenger))
 
+(defn emit-recover-barriers [messenger recover]
+  (reduce (fn [m pub] 
+            (m/emit-barrier m pub {:recover recover}))
+          messenger
+          (m/publications messenger)))
+
 (defn recover-state [{:keys [messenger coordinator replica] :as state} recover]
   (let [old-replica (:replica state)
         {:keys [job-id task-type windows task-id slot-id] :as event} (:event state)
         messenger (if (= task-type :output)
                     (m/emit-barrier-ack messenger)
                     (-> messenger 
-                        (m/emit-barrier {:recover recover})
+                        (m/next-epoch)
+                        (emit-recover-barriers recover)
                         (m/unblock-subscriptions!)))
         _ (info "RECOVER " recover task-type task-id slot-id)
         windows-state (next-windows-state event recover)
         next-pipeline (next-pipeline-state (:pipeline state) event recover)
-        next-state (assoc (->EventState :start-processing
-                                        replica
-                                        messenger
-                                        coordinator
-                                        next-pipeline
-                                        {}
-                                        windows-state
-                                        (:exhausted? state)
-                                        (:init-event state)
-                                        (:event state))
-                          ;; Fix this
-                          :state :runnable
-                          
-                          )]
+        next-state (->EventState :start-processing
+                                 :runnable
+                                 replica
+                                 messenger
+                                 coordinator
+                                 next-pipeline
+                                 {}
+                                 windows-state
+                                 (:exhausted? state)
+                                 (:init-event state)
+                                 (:event state))]
     (if-not (empty? windows) 
       (ws/assign-windows next-state :recovered)
       next-state)))
@@ -619,13 +628,10 @@
             _ (backoff-until-task-start! pipeline-data)
 
             ex-f (fn [e] (handle-exception task-information log e group-ch outbox-ch id job-id))
-            event (->> pipeline-data
-                               lc/invoke-before-task-start
-                               ;add-pipeline
-                               #_resolve-filter-state
-                               #_resolve-log)
+            event (lc/invoke-before-task-start pipeline-data)
             initial-state (map->EventState 
                             {:lifecycle :recover
+                             :state :runnable
                              :replica (onyx.log.replica/starting-replica opts)
                              :messenger messenger
                              :coordinator coordinator

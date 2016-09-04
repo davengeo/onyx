@@ -73,12 +73,16 @@
                           (transition-messenger prev-replica new-replica job-id peer-id)
                           (m/set-replica-version (get-in new-replica [:allocation-version job-id])))
         checkpoint-version (max-completed-checkpoints log new-replica job-id)
-        ;; FIXME: URGENT Coordinator needs to handle blocked situation
-        messenger (m/emit-barrier new-messenger {:recover checkpoint-version})]
+        messenger (reduce (fn [m pub] 
+                            (m/emit-barrier m pub {:recover checkpoint-version}))
+                          (m/next-epoch new-messenger)
+                          (m/publications new-messenger))]
     messenger))
 
 (defn periodic-barrier [{:keys [prev-replica job-id messenger] :as state}]
-  (let [messenger (m/emit-barrier messenger)] 
+  (let [messenger (reduce m/emit-barrier 
+                          (m/next-epoch messenger) 
+                          (m/publications messenger))] 
     (assoc state :messenger messenger)))
 
 (defn coordinator-action [action-type {:keys [messenger] :as state} new-replica]

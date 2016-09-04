@@ -427,7 +427,7 @@
 
   m/Messenger
   (publications [messenger]
-    publications)
+    (flatten-publications publications))
 
   (subscriptions [messenger]
     subscriptions)
@@ -555,18 +555,14 @@
         (assert recover)
         recover)))
 
-  (emit-barrier [messenger]
-    (onyx.messaging.messenger/emit-barrier messenger {}))
+  (emit-barrier [messenger publication]
+    (onyx.messaging.messenger/emit-barrier messenger publication {}))
 
-  (emit-barrier [messenger barrier-opts]
-    (as-> messenger mn
-      (m/next-epoch mn)
-      (reduce (fn [m p] 
-                (info "Emitting barrier " id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
-                (offer-until-success! m p (merge (->Barrier id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
-                                                 barrier-opts))) 
-              mn
-              (flatten-publications publications))))
+  (emit-barrier [messenger publication barrier-opts]
+    (offer-until-success! messenger 
+                          publication
+                          (merge (->Barrier id (:dst-task-id publication) (m/replica-version messenger) (m/epoch messenger))
+                                 barrier-opts)))
 
   (unblock-subscriptions! [messenger]
     (run! set-barrier-emitted! subscriptions)

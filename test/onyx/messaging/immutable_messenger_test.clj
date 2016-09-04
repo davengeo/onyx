@@ -10,9 +10,12 @@
 (defn switch-peer [messenger peer]
   (assoc messenger :id peer))
 
+(defn emit-barriers [messenger]
+  (reduce m/emit-barrier (m/next-epoch messenger) (m/publications messenger)))
+
 (defn process-barriers [messenger] 
   (if (m/all-barriers-seen? messenger)
-    (m/emit-barrier messenger)
+    (emit-barriers messenger)
     messenger))
 
 (defn ack-barriers [messenger]
@@ -54,15 +57,15 @@
 
               (switch-peer :p1)
               ;; Start one epoch higher on the input tasks
-              (m/emit-barrier)
+              (emit-barriers)
               (m/offer-segments [:m1 :m2] [t1-queue-p1])
-              (m/emit-barrier)
+              (emit-barriers)
               (m/offer-segments [:m5 :m6] [t1-queue-p1])
-              (m/emit-barrier)
+              (emit-barriers)
 
               (switch-peer :p2)
               ;; Start one epoch higher on the input tasks
-              (m/emit-barrier)
+              (emit-barriers)
               (m/offer-segments [:m3 :m4] [t1-queue-p2])
               ;; don't emit next barrier so that :m5 and :m6 will be blocked
               )
@@ -81,8 +84,8 @@
     ;; And continue reading the messages afterwards
     (let [mnext (-> (last ms)
                     (switch-peer :p2)
-                    (m/emit-barrier)
-                    (m/emit-barrier))
+                    (emit-barriers)
+                    (emit-barriers))
           mss (reductions (fn [m p]
                             ;; make into acking barrier since it's leaf
                             (-> m
@@ -98,9 +101,9 @@
       ;; Lets emit new barriers and see if all barriers are seen
       (let [m-p4 (-> (last mss)
                      (switch-peer :p1)
-                     (m/emit-barrier)
+                    (emit-barriers)
                      (switch-peer :p2)
-                     (m/emit-barrier)
+                    (emit-barriers)
                      (switch-peer :p4)
                      (m/poll)
                      (m/poll))

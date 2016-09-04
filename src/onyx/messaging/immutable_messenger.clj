@@ -318,42 +318,23 @@
             batch))
 
   (poll-recover [messenger]
-    ;; Waits for the initial barriers when not 
-    
-    ;; read until got all barriers
-    ;; Check they all have the same restore information
-    ;; Return one restore information
-    
-    ;; Do loop of receive, all seen, emit, return {:epoch :replica-version}
-
-    ;; FIXME hard coded "batch size"
-    ; (println "Messages " 
-    ;          (m/replica-version messenger)
-    ;          (m/epoch messenger)
-    ;          (m/all-barriers-seen? messenger)
-    ;          (:message messenger))
-      (if (m/all-barriers-seen? messenger)
-        (let [recover (:recover (:barrier (first (messenger->subscriptions messenger))))] 
-          (assert recover)
-          (assoc messenger :recover recover))
-        (assoc (m/poll messenger) :recover nil)))
+    (if (m/all-barriers-seen? messenger)
+      (let [recover (:recover (:barrier (first (messenger->subscriptions messenger))))] 
+        (assert recover)
+        (assoc messenger :recover recover))
+      (assoc (m/poll messenger) :recover nil)))
 
   (register-ticket [messenger sub-info]
     messenger)
 
-  (emit-barrier [messenger]
-    (onyx.messaging.messenger/emit-barrier messenger {}))
+  (emit-barrier [messenger publication]
+    (onyx.messaging.messenger/emit-barrier messenger publication {}))
 
-  (emit-barrier
-    [messenger barrier-opts]
-    (as-> messenger mn
-      (m/next-epoch mn)
-      (reduce (fn [m p] 
-                (info "Emitting barrier " id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
-                (write m p (merge (->Barrier id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
-                                  barrier-opts))) 
-              mn
-              (get publications id))))
+  (emit-barrier [messenger publication barrier-opts]
+    (write messenger 
+           publication 
+           (merge (->Barrier id (:dst-task-id publication) (m/replica-version messenger) (m/epoch messenger)) 
+                  barrier-opts)))
 
   (unblock-subscriptions! [messenger]
     (update-in messenger
@@ -361,8 +342,7 @@
                (fn [ss] 
                  (mapv set-barrier-emitted ss))))
 
-  (all-barriers-seen? 
-    [messenger]
+  (all-barriers-seen?  [messenger]
     ; (println "Barriers seen:" 
     ;       (empty? (remove #(found-next-barrier? messenger %) 
     ;                       (messenger->subscriptions messenger)))
@@ -371,8 +351,7 @@
     (empty? (remove #(found-next-barrier? messenger %) 
                     (messenger->subscriptions messenger))))
 
-  (emit-barrier-ack
-    [messenger]
+  (emit-barrier-ack [messenger]
     (as-> messenger mn 
       (reduce (fn [m p] 
                 ;(info "Acking barrier to " id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
