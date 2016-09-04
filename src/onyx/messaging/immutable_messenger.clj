@@ -297,10 +297,7 @@
   (poll [messenger]
     (let [subscriber (first (messenger->subscriptions messenger))
           {:keys [message ticket] :as result} (take-messages messenger subscriber)] 
-      ;(println (:id messenger) "TRying to take from " subscriber "message is " message)
-      (debug (:id messenger) "MSG:" 
-             (if message message "nil") 
-             "New sub:" (subscriber->str (:subscriber result)))
+      (debug (:id messenger) "MSG:" (if message message "nil") "New sub:" (subscriber->str (:subscriber result)))
       (cond-> (assoc messenger :message nil)
         ticket (set-ticket subscriber ticket)
         true (update-first-subscriber (constantly (:subscriber result)))
@@ -343,17 +340,11 @@
                  (mapv set-barrier-emitted ss))))
 
   (all-barriers-seen?  [messenger]
-    ; (println "Barriers seen:" 
-    ;       (empty? (remove #(found-next-barrier? messenger %) 
-    ;                       (messenger->subscriptions messenger)))
-    ;       (vec (remove #(found-next-barrier? messenger %) 
-    ;                                     (messenger->subscriptions messenger))))
     (empty? (remove #(found-next-barrier? messenger %) 
                     (messenger->subscriptions messenger))))
 
   (emit-barrier-ack [messenger]
     (reduce (fn [m p] 
-              ;(info "Acking barrier to " id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
               (write m p (->BarrierAck id (:dst-task-id p) (m/replica-version m) (m/epoch m)))) 
             messenger 
             (get publications id))))

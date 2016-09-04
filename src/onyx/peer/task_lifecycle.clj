@@ -181,13 +181,6 @@
   (reduce m/emit-barrier messenger (m/publications messenger)))
 
 (defn emit-barriers [{:keys [event messenger] :as state}]
-  ;; TODO, checkpoint state here - do it for all types
-  ;; But only if all barriers are seen, or if we're an input and we're going to emit
-  
-  ;; For input tasks we may need to do it for both input checkpoint as well as state
-  ;; Though for input I think we just need to take a copy which we will put in the barrier 
-  ;; state ready to be acked? That does seem quite ugly. Maybe we write the state and the 
-  ;; checkpoint value here, but then modify the ack state when it actually gets acked.
   (let [{:keys [task-type id]} event] 
     (if (and (#{:function :input} task-type) (m/all-barriers-seen? messenger))
       (let [publications (m/publications messenger)
@@ -198,9 +191,7 @@
             replica-version (m/replica-version new-messenger)
             epoch (m/epoch new-messenger)
             {:keys [job-id task-id slot-id log]} event]
-        ;(println "Writing state checkpoint " replica-version epoch (mapv ws/export-state windows-state))
-        (when-not (empty? (:windows event)) 
-          ;; Make write-checkpoint just take an event
+        (when (:windowed-task? event) 
           (extensions/write-checkpoint log job-id replica-version epoch task-id slot-id 
                                        :state 
                                        (mapv ws/export-state (:windows-state state))))
@@ -213,7 +204,8 @@
 
 (defn ack-barriers [{:keys [messenger] :as state}]
   (if (m/all-barriers-seen? messenger)
-    ;; Add me later
+    ;; Question: should we be writing checkpoints here, for state / output tasks?
+    ;; Probably should be
     ;;(extensions/write-checkpoint log job-id replica-version epoch task-id slot-id :state {:3 4})
     (assoc state :messenger (-> messenger
                                 (m/emit-barrier-ack)
@@ -221,16 +213,13 @@
                                 (m/unblock-subscriptions!)))
     state))
 
-;; FIXME: create an issue to reduce number of times exhaust input is written
-;; Should check whether it's already exhausted for this allocation version
-;; Maybe can use an atom though
 (defn complete-job! [{:keys [event messenger] :as state}] ;; Fixme StateMonad
   (let [{:keys [job-id task-id]} event
         entry (entry/create-log-entry :exhaust-input {:replica-version (m/replica-version messenger)
                                                       ;:epoch (m/epoch (:messenger state))
                                                       :job job-id 
                                                       :task task-id})]
-    (println "Complete job" task-id (:replica-version (:args entry)))
+    (info "Job completed" job-id task-id (:replica-version (:args entry)))
     (>!! (:outbox-ch event) entry)))
 
 (defn backoff-when-drained! [event]
@@ -261,20 +250,17 @@
     (if ack-result
       (let [{:keys [replica-version epoch]} ack-result]
         (if-let [barrier (get-in barriers [replica-version epoch])] 
-          (do
-           ;(println "Acking result, barrier:" (into {} barrier) replica-version epoch)
-           ;(println barriers)
-           (let [{:keys [job-id task-id slot-id log]} event
-                 completed? (:completed? barrier)] 
-             (when completed?
-               (if (not (:exhausted? state))
-                 (complete-job! state)
-                 (backoff-when-drained! state)))
-             (-> state
-                 (assoc :exhausted? completed?)
-                 (update :barriers dissoc-in [replica-version epoch])
-                 (assoc :messenger (m/flush-acks new-messenger)))))
-          ;; Maybe shouldn't have flush-acks here
+          (let [{:keys [job-id task-id slot-id log]} event
+                completed? (:completed? barrier)] 
+            (when completed?
+              (if (not (:exhausted? state))
+                (complete-job! state)
+                (backoff-when-drained! state)))
+            (-> state
+                (assoc :exhausted? completed?)
+                (update :barriers dissoc-in [replica-version epoch])
+                (assoc :messenger (m/flush-acks new-messenger))))
+          ;; Question: may not need flush-acks here?
           (assoc state :messenger (m/flush-acks new-messenger))))
       (assoc state :messenger new-messenger))))
 
@@ -290,15 +276,7 @@
                          (get recover)
                          (get [task-id slot-id checkpoint-type]))]
     (if-not (= :beginning checkpointed)
-      checkpointed))
-  ; (if (some #{job-id} (:jobs prev-replica))
-  ;   (do 
-  ;    (when (not= (required-checkpoints prev-replica job-id)
-  ;                (required-checkpoints next-replica job-id))
-  ;      (throw (ex-info "Slots for input tasks must currently be stable to allow checkpoint resume" {})))
-  ;    (let [[[rv e] checkpoints] (max-completed-checkpoints event next-replica)]
-  ;      (get checkpoints [task-id slot-id]))))
-  )
+      checkpointed)))
 
 (defn next-windows-state
   [{:keys [log-prefix task-map windows triggers] :as event} recover]
@@ -307,13 +285,13 @@
       (->> windows
            (mapv (fn [window] (wc/resolve-window-state window triggers task-map)))
            (mapv (fn [stored ws]
-                   ;(println "STORED" stored)
                    (if stored
                      (let [recovered (ws/recover-state ws stored)] 
                        (info "Recovered state" stored (:id event))
                        recovered) 
                      ws))
                  (or stored (repeat nil))))
+      ;; Log playback
       ;(update :windows-state
       ;         (fn [windows-state] 
       ;           (mapv (fn [ws entries]
@@ -328,10 +306,8 @@
 
 (defn next-pipeline-state [pipeline event recover]
   (if (= :input (:task-type event)) 
-    ;; Do this above, and only once
     (let [stored (recover-stored-checkpoint event :input recover)]
-      (info "Recovering checkpoint " stored)
-      (println "Recovering checkpoint " (:task-id event) stored)
+      (info "Recovering checkpoint "  (:job-id event) (:task-id event) stored)
       (oi/recover pipeline stored))
     pipeline))
 
@@ -353,7 +329,7 @@
                         (m/next-epoch)
                         (emit-recover-barriers recover)
                         (m/unblock-subscriptions!)))
-        _ (info "RECOVER " recover task-type task-id slot-id)
+        _ (info "Recovering pipeline state: " job-id task-id slot-id recover task-type)
         windows-state (next-windows-state event recover)
         next-pipeline (next-pipeline-state (:pipeline state) event recover)
         next-state (->EventState :start-processing
@@ -373,16 +349,13 @@
 
 (defn try-recover [state]
   (if-let [recover (fetch-recover state)]
-    (do
-     (info "RECOVERED" recover (:onyx/name (:task-map (:event state))))
-     (assoc (recover-state state recover) :state :runnable))
+    (assoc (recover-state state recover) :state :runnable)
     (assoc state :state :blocked)))
 
 (defn next-state-from-replica [{:keys [messenger coordinator] :as prev-state} replica]
   (let [{:keys [job-id task-type] :as event} (:event prev-state)
         old-replica (:replica prev-state)
         state (assoc prev-state :event event)
-        ;; why are we passing in event here
         next-messenger (ms/next-messenger-state! messenger event old-replica replica)
         ;; Coordinator must be transitioned before recovery, as the coordinator
         ;; emits the barrier with the recovery information in 
@@ -394,12 +367,6 @@
            :event (:init-event prev-state) 
            :messenger next-messenger 
            :coordinator next-coordinator)))
-
-;; keys, 
-;; :lifecycle
-;; :state :blocked
-;; :state :exhausted
-;; :state :running
 
 (defn task-alive? [event]
   (first (alts!! [(:task-kill-ch event) (:kill-ch event)] :default true)))
@@ -500,14 +467,18 @@
     (let [{:keys [task-kill-ch kill-ch task-information replica-atom opts state]} (:event init-state)] 
       (loop [prev-state init-state 
              replica-val @replica-atom]
+        ;; TODO add here :emit-barriers, emit-ack-barriers?
+        (assert (#{:start-processing :recover :write-batch} (:lifecycle state)))
         ;(println "Iteration " (:state prev-state))
         (let [state (next-state prev-state replica-val)]
-          ; (assert (empty? (.__extmap event)) 
-          ;         (str "Ext-map for Event record should be empty at start. Contains: " (keys (.__extmap event))))
+          (assert (empty? (.__extmap state)) 
+                  (str "Ext-map for state record should be empty at start. Contains: " 
+                       (keys (.__extmap state))))
+          (assert (empty? (.__extmap (:event state))) 
+                  (str "Ext-map for state record should be empty at start. Contains: " 
+                       (keys (.__extmap (:event state)))))
           (if-not (= :killed (:lifecycle state)) 
-            (do
-             (assert (#{:start-processing :recover :write-batch} (:lifecycle state)))
-             (recur state @replica-atom))
+            (recur state @replica-atom)
             prev-state))))
    (catch Throwable e
      (ex-f e)
@@ -527,7 +498,7 @@
            (if pipeline
              (op/start pipeline)
              (throw (ex-info "Failure to resolve plugin builder fn. Did you require the file that contains this symbol?" {:kw kw})))))
-       ;; TODO, make this a unique type - extend-type is ugly
+       ;; TODO, make this a unique type with protocol dispatch - don't use extend-type
        (Object.))
       (catch Throwable e
         (throw e)))))
@@ -683,13 +654,6 @@
         (some-> last-state :pipeline (op/stop event))
 
         (close! (:task-kill-ch component))
-
-        ; (when-let [state-log (:state-log event)] 
-        ;   (state-extensions/close-log state-log event))
-
-        ; (when-let [filter-state (:filter-state event)] 
-        ;   (when (exactly-once-task? event)
-        ;     (state-extensions/close-filter @filter-state event)))
 
         ((:compiled-after-task-fn event) event)))
 
