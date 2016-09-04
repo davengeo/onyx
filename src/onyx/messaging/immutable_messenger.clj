@@ -353,11 +353,13 @@
                 (write m p (merge (->Barrier id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
                                   barrier-opts))) 
               mn
-              (get publications id))
-      (update-in mn
-                 [:subscriptions id] 
-                 (fn [ss] 
-                   (mapv set-barrier-emitted ss)))))
+              (get publications id))))
+
+  (unblock-subscriptions! [messenger]
+    (update-in messenger
+               [:subscriptions id] 
+               (fn [ss] 
+                 (mapv set-barrier-emitted ss))))
 
   (all-barriers-seen? 
     [messenger]

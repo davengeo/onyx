@@ -142,6 +142,7 @@
   (offer-segments
     [messenger batch task-slot]
     (update-messenger-atom! messenger m/offer-segments batch task-slot)
+    ;; Success!
     task-slot)
 
   (register-ticket [messenger sub-info]
@@ -153,8 +154,12 @@
   (emit-barrier
     [messenger barrier-opts]
     (update-messenger-atom! messenger m/emit-barrier barrier-opts)
-    messenger
-    )
+    messenger)
+  
+  (unblock-subscriptions! 
+    [messenger]
+    (update-messenger-atom! messenger m/unblock-subscriptions!)
+    messenger)
 
   (flush-acks [messenger]
     (update-messenger-atom! messenger m/flush-acks)
@@ -172,7 +177,7 @@
     messenger
     ))
 
-(defmethod m/build-messenger :atom [peer-config messenger-group id _]
+(defmethod m/build-messenger :atom [peer-config messenger-group id]
   (map->AtomMessenger {:id id 
                        :peer-config peer-config 
                        :messenger-group messenger-group}))

@@ -14,11 +14,18 @@
 
   o/OnyxOutput
 
+  (prepare-batch [_ state]
+    state)
+
   (write-batch
-    [_ {:keys [event messenger]}]
+    [_ {:keys [event messenger] :as state}]
     (let [{:keys [results]} event] 
-      {:null/not-written (map (fn [v] (assoc v :replica (m/replica-version messenger))) 
-                              (map :message (mapcat :leaves (:tree results))))})))
+      (update state 
+              :event 
+              merge 
+              {:null/not-written (map (fn [v] 
+                                        (assoc v :replica (m/replica-version messenger))) 
+                                      (map :message (mapcat :leaves (:tree results))))}))))
 
 (defn output [event]
   (map->NullWriter {:event event}))

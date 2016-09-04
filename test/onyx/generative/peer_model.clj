@@ -395,12 +395,6 @@
                                                  (java.util.UUID. (.nextLong @random-gen)
                                                                   (.nextLong @random-gen)))
                   onyx.peer.coordinator/start-coordinator! (fn [state] state)
-                  onyx.peer.task-lifecycle/fetch-recover (fn [state]
-                                                           (loop [r (m/poll-recover (:messenger state)) n 100]
-                                                             (if r
-                                                               r
-                                                               (if (pos? n) 
-                                                                 (recur (m/poll-recover (:messenger state)) (dec n))))))
                   onyx.peer.coordinator/next-replica (fn [coordinator replica]
                                                        (if (coord/started? coordinator)
                                                          ;; store all our state in the coordinator thread key 

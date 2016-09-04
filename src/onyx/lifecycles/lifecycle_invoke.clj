@@ -3,6 +3,7 @@
             [taoensso.timbre :refer [info error warn trace fatal] :as timbre]))
 
 (defn handle-exception [event phase t handler-fn]
+  (println "EXCEPTION IS " t)
   (let [action (handler-fn event phase t)]
     (cond (= action :kill)
           (throw t)

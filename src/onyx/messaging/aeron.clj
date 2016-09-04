@@ -122,7 +122,7 @@
 (defn ack? [v]
   (instance? onyx.types.BarrierAck v))
 
-(defn subscripion-ticket 
+(defn subscription-ticket 
   [{:keys [replica-version ticket-counters] :as messenger} 
    {:keys [dst-task-id src-peer-id] :as sub}]
   (get-in @ticket-counters [replica-version [src-peer-id dst-task-id]]))
@@ -139,7 +139,7 @@
   (let [publication ^Publication (:publication task-slot)
         buf ^UnsafeBuffer (UnsafeBuffer. ^bytes (messaging-compress message))]
     (while (let [ret (.offer ^Publication publication buf 0 (.capacity buf))] 
-             (when (neg? ret) (println "OFFERED, GOT" ret))
+             (when (neg? ret) (println "OFFERED, GOT" ret Publication/CLOSED))
              (when (= ret Publication/CLOSED)
                (throw (Exception. "Wrote to closed publication.")))
              (neg? ret))
@@ -245,7 +245,7 @@
 
 (defn poll-messages! [messenger sub-info]
   (let [{:keys [src-peer-id dst-task-id subscription barrier]} sub-info
-        sub-ticket (subscripion-ticket messenger sub-info)]
+        sub-ticket (subscription-ticket messenger sub-info)]
     ;; May not need to check for alignment here, can prob just do in :recover
     (if (and (subscription-aligned? sub-ticket)
              (unblocked? messenger sub-info))
@@ -284,21 +284,14 @@
 
 (defn poll-new-replica! [messenger sub-info]
   (let [{:keys [src-peer-id dst-task-id subscription barrier]} sub-info
-        sub-ticket (subscripion-ticket messenger sub-info)]
+        sub-ticket (subscription-ticket messenger sub-info)]
     ;; May not need to check for alignment here, can prob just do in :recover
-
-    #_(info "POLLING SUB" 
-          (subscription-aligned? sub-ticket)
-          sub-info
-          )
     (if (subscription-aligned? sub-ticket)
       (let [fh (controlled-fragment-data-handler
                 (fn [buffer offset length header]
                   (handle-poll-new-barrier messenger barrier dst-task-id src-peer-id buffer offset length header)))]
         (.controlledPoll ^Subscription subscription ^ControlledFragmentHandler fh fragment-limit-receiver))
-      (info "SUB NOT ALIGNED")
-      
-      )))
+      (info "SUB NOT ALIGNED"))))
 
 ;; TODO, can possibly take more than one ack at a time from a sub?
 (defn handle-poll-acks [messenger barrier-ack dst-task-id src-peer-id buffer offset length header]
@@ -401,6 +394,7 @@
           publications))
 
 (defn set-barrier-emitted! [subscriber]
+  (assert (not (:emitted? (:barrier subscriber))))
   (swap! (:barrier subscriber) assoc :emitted? true))
 
 (defn allocation-changed? [replica job-id replica-version]
@@ -410,11 +404,10 @@
 
 (defrecord AeronMessenger 
   [messenger-group ticket-counters id replica-version epoch 
-   publications subscriptions ack-subscriptions read-index !replica]
+   publications subscriptions ack-subscriptions read-index]
 
   component/Lifecycle
   (start [component]
-    (println "Replica is " @!replica)
     (println "Ticket counters " (:ticket-counters messenger-group))
     (assoc component
            :ticket-counters 
@@ -527,8 +520,6 @@
     messenger)
 
   (poll [messenger]
-    ;; TODO, should loop until got enough messages for a batch
-    ;(info "LOOPING OVER " (count subscriptions))
     (let [subscriber (get subscriptions (mod @(:read-index messenger) (count subscriptions)))
           messages (poll-messages! messenger subscriber)] 
       (swap! (:read-index messenger) inc)
@@ -541,14 +532,14 @@
     ;; TODO: should re-use unsafe buffers in aeron messenger
     (let [payload ^bytes (messaging-compress (->Message id dst-task-id slot-id replica-version batch))
           buf ^UnsafeBuffer (UnsafeBuffer. payload)] 
-      (loop [pubs (get-in publications [dst-task-id slot-id])]
+      ;; shuffle publication order to ensure even coverage
+      ;; slow
+      (loop [pubs (shuffle (get-in publications [dst-task-id slot-id]))]
         (if-let [pub-info (first pubs)]
           (let [ret (.offer ^Publication (:publication pub-info) buf 0 (.capacity buf))]
             (if (neg? ret)
               (recur (rest pubs))
-              ;; Return the publication info for the publication that it was sent to
-              ;; as evidence of success
-              pub-info))))))
+              task-slot))))))
 
   (poll-recover [messenger]
     (loop [sbs subscriptions]
@@ -568,16 +559,18 @@
     (onyx.messaging.messenger/emit-barrier messenger {}))
 
   (emit-barrier [messenger barrier-opts]
-    (run! set-barrier-emitted! (:subscriptions messenger))
     (as-> messenger mn
       (m/next-epoch mn)
       (reduce (fn [m p] 
                 (info "Emitting barrier " id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
-                (println "Connected? " (.isConnected (:publication p)))
                 (offer-until-success! m p (merge (->Barrier id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
                                                  barrier-opts))) 
               mn
               (flatten-publications publications))))
+
+  (unblock-subscriptions! [messenger]
+    (run! set-barrier-emitted! subscriptions)
+    messenger)
 
   (all-barriers-seen? [messenger]
     (empty? (remove #(found-next-barrier? messenger %) 
@@ -592,11 +585,10 @@
               (flatten-publications publications))
       (m/next-epoch mn))))
 
-(defmethod m/build-messenger :aeron [peer-config messenger-group id !replica]
+(defmethod m/build-messenger :aeron [peer-config messenger-group id]
   (map->AeronMessenger {:id id 
                         :peer-config peer-config 
                         :messenger-group messenger-group 
-                        :!replica !replica
                         :read-index (atom 0)}))
 
 ; (defmethod clojure.core/print-method AeronPeerGroup

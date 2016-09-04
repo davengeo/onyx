@@ -30,6 +30,7 @@
 
 ;; move to another file?
 (defn read-input-batch [{:keys [event pipeline] :as state}]
+  ;(throw (Exception. "I DON'T THINK THIS SHOULD BE ABLE TO READ UNTIL IT RECOVERS"))
   (let [{:keys [task-map id job-id task-id]} event
         batch-size (:onyx/batch-size task-map)
         [next-reader batch] 

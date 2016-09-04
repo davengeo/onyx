@@ -13,7 +13,7 @@
     (:onyx.messaging/impl peer-config)))
 
 (defmulti build-messenger 
-  (fn [peer-config messenger-group id !replica]
+  (fn [peer-config messenger-group id]
     (:onyx.messaging/impl peer-config)))
 
 (defprotocol MessengerGroup 
@@ -41,6 +41,7 @@
   (offer-segments [messenger messages task-slots])
   (emit-barrier [messenger] [messenger barrier-opts])
   (emit-barrier-ack [messenger])
+  (unblock-subscriptions! [messenger])
   (replica-version [messenger])
   (set-replica-version [messenger replica-version])
   (epoch [messenger])

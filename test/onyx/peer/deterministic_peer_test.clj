@@ -67,22 +67,22 @@
 (def key-slot-tracker (atom {}))
 
 (defn update-state-atom! [{:keys [messenger] :as event} window trigger state-event extent-state]
-  #_(when-not (= :job-completed (:event-type state-event)) 
-    ;(println "Extent state now " extent-state)
-    (let [{:keys [job-id id egress-tasks]} event 
-          destinations (doall 
-                         (map (fn [route] 
-                                {:src-peer-id id
-                                 ;; TODO: need better api that fills in site and slot-id for dests
-                                 :slot-id -1
-                                 :dst-task-id [job-id route]}) 
-                              egress-tasks))]
-      (m/offer-segments (:messenger (:state event)) 
-                       [{:state-output? true 
-                         :send-number (swap! number inc)
-                         :path [] 
-                         :extent-state extent-state}] 
-                       destinations)))
+  ;; FIXME, needs to re-offer / pause state
+  ; (when-not (= :job-completed (:event-type state-event)) 
+  ;   (let [{:keys [job-id id egress-tasks]} event 
+  ;         destinations (doall 
+  ;                        (map (fn [route] 
+  ;                               {:src-peer-id id
+  ;                                ;; TODO: need better api that fills in site and slot-id for dests
+  ;                                :slot-id -1
+  ;                                :dst-task-id [job-id route]}) 
+  ;                             egress-tasks))]
+  ;     (m/offer-segments (:messenger (:state event)) 
+  ;                      [{:state-output? true 
+  ;                        :send-number (swap! number inc)
+  ;                        :path [] 
+  ;                        :extent-state extent-state}] 
+  ;                      destinations)))
 
   ;; Triggering on job completed is buggy 
   ;; as peer may die while writing :job-completed
@@ -370,58 +370,13 @@
                             (map (fn [v] 
                                    (update v :path (comp vec butlast))))
                             (group-by :n))]
-    ;(println  "jobs " jobs "comp" (:completed-jobs replica))
-    ;(println "gen-cmds" gen-cmds)
     (prop-is (>= n-peers n-required-peers) "not enough peers")
     (prop-is (= (count jobs) (count (:completed-jobs replica))) "jobs not completed")
     (prop-is (= (count (:groups model)) (count (:groups replica))) "groups check")
     (prop-is (= (count (:peers model)) (count (:peers replica))) "peers")
-    ;(println "STATE ATOM" @state-atom)
     (state-properties expected-state @state-atom)
-    ;(println "Flow outputs " flow-outputs)
-    
-    ; (prop-is (= expected-state 
-    ;             ;; Potentially should check for state ordering here
-    ;             (set (:extent-state 
-    ;                    (last 
-    ;                      (sort-by (comp count :extent-state) 
-    ;                               messaged-state-outputs))))) 
-    ;          "bad messaged state state")
-
-
-
-
-    ;; FIXME ADD BACK
+    ;; FIXME requires fix to how tasks can be blocked. See above trigger
     ;(prop-is (= (set expected-outputs) (set (map reset-peer-path flow-outputs))) "messenger flow values incorrect")
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    ;(println "Expected: " expected-outputs)
-    ;(println "Outputs:" actual-outputs)
-    ;; TODO: can only guarantee outputs are in order if there is only one intermediate task
-    ;; Implement a better property here
     (check-outputs-in-order! peer-outputs)))
 
 (defspec deterministic-abs-test {;:seed X 

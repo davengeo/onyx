@@ -72,14 +72,14 @@
   (let [new-messenger (-> messenger 
                           (transition-messenger prev-replica new-replica job-id peer-id)
                           (m/set-replica-version (get-in new-replica [:allocation-version job-id])))
-        checkpoint-version (max-completed-checkpoints log new-replica job-id)]
-    ;; FIXME: messenger needs a shutdown ch so it can give up in offers
-    ;; TODO: figure out opts in here?
-    ;; Should basically be the replica version and epoch to rewind to
-    (m/emit-barrier new-messenger {:recover checkpoint-version})))
+        checkpoint-version (max-completed-checkpoints log new-replica job-id)
+        ;; FIXME: URGENT Coordinator needs to handle blocked situation
+        messenger (m/emit-barrier new-messenger {:recover checkpoint-version})]
+    messenger))
 
 (defn periodic-barrier [{:keys [prev-replica job-id messenger] :as state}]
-  (assoc state :messenger (m/emit-barrier messenger)))
+  (let [messenger (m/emit-barrier messenger)] 
+    (assoc state :messenger messenger)))
 
 (defn coordinator-action [action-type {:keys [messenger] :as state} new-replica]
   (assert 
@@ -100,7 +100,6 @@
           ;; FIXME: put in job data
           barrier-period-ms 500] 
       (loop [state state]
-        (println "Always up to date replica " @(:!replica state))
         (let [timeout-ch (timeout barrier-period-ms)
               {:keys [shutdown-ch allocation-ch]} state
               [new-replica ch] (alts!! [shutdown-ch allocation-ch timeout-ch])]
@@ -134,16 +133,14 @@
       ;; Probably bad to have to default to -1, though it will get updated immediately
       (m/set-replica-version (get-in replica [:allocation-version job-id] -1))))
 
-(defrecord PeerCoordinator [log messenger-group peer-config peer-id job-id messenger !replica
+(defrecord PeerCoordinator [log messenger-group peer-config peer-id job-id messenger
                             group-ch allocation-ch shutdown-ch coordinator-thread]
   Coordinator
   (start [this] 
     (info "Starting coordinator on:" peer-id)
     (let [initial-replica (onyx.log.replica/starting-replica peer-config)
           ;; Probably do this in coordinator? or maybe not 
-          messenger (-> (m/build-messenger peer-config messenger-group [:coordinator peer-id] 
-                                           ;; FIXME
-                                           (atom nil))
+          messenger (-> (m/build-messenger peer-config messenger-group [:coordinator peer-id])
                         (start-messenger initial-replica job-id)) 
           allocation-ch (chan (dropping-buffer 1))
           shutdown-ch (promise-chan)]
@@ -156,7 +153,6 @@
                                    {:log log
                                     :peer-config peer-config 
                                     :messenger messenger 
-                                    :!replica !replica
                                     :prev-replica initial-replica 
                                     :job-id job-id
                                     :peer-id peer-id 
@@ -192,11 +188,10 @@
                    (get-in new-replica [:allocation-version job-id])))
         (next-replica new-replica)))))
 
-(defn new-peer-coordinator [log messenger-group peer-config peer-id job-id group-ch !replica]
+(defn new-peer-coordinator [log messenger-group peer-config peer-id job-id group-ch]
   (map->PeerCoordinator {:log log
                          :group-ch group-ch
                          :messenger-group messenger-group 
                          :peer-config peer-config 
                          :peer-id peer-id 
-                         :job-id job-id
-                         :!replica !replica}))
+                         :job-id job-id}))

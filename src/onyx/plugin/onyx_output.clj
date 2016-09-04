@@ -6,6 +6,7 @@
             [clj-tuple :as t]))
 
 (defprotocol OnyxOutput
+  (prepare-batch [this event])
   (write-batch [this event]))
 
 (defn select-slot [job-task-id-slots hash-group route]
@@ -17,46 +18,50 @@
         (mod hsh n-slots))    
       -1)))
 
-(defn task-alive? [kill-ch task-kill-ch]
-  (first (alts!! [kill-ch task-kill-ch] :default true)))
-
-(defn try-send-until-success! [messenger batch task-slot kill-ch task-kill-ch]
-  (loop []
-    (when-not (and (m/offer-segments messenger batch task-slot)
-                   ;; Need a better way to unwind the send messages stack
-                   ;; Try to get rid of reduce?
-                   (task-alive? kill-ch task-kill-ch))
-      (recur))))
-
-;; separate, prepare outputs
-;; FIXME split out destinations for retry, may need to switch destinations, can'd do every thning in a single offer
+;; TODO: split out destinations for retry, may need to switch destinations, can do every thing in a single offer
 ;; TODO: be smart about sending messages to multiple co-located tasks
 ;; TODO: send more than one message at a time
-(defn send-messages [messenger replica {:keys [id job-id task-id egress-tasks task->group-by-fn kill-ch task-kill-ch]} segments]
-  (let [grouped (group-by :flow segments)
-        job-task-id-slots (get-in replica [:task-slot-ids job-id])]
-    (run! (fn [[flow messages]]
-            (run! (fn [{:keys [message]}]
-                    (let [hash-group (g/hash-groups message egress-tasks task->group-by-fn)
-                          task-slots (doall 
-                                      (map (fn [route] 
-                                             {:src-peer-id id
-                                              :slot-id (select-slot job-task-id-slots hash-group route)
-                                              :dst-task-id [job-id route]}) 
-                                           flow))]
-                      (run! (fn [task-slot]
-                              (try-send-until-success! messenger [message] task-slot kill-ch task-kill-ch))
-                            task-slots)))
-                  messages))
-          grouped)))
+(defn send-messages [messenger replica prepared]
+  (loop [messages prepared]
+    (when-let [[message task-slot] (first messages)] 
+      (if (m/offer-segments messenger [message] task-slot)
+        (recur (rest messages))
+        ;; blocked, return - state will be blocked
+        messages))))
 
 (extend-type Object
   OnyxOutput
-  (write-batch [this {:keys [event replica messenger] :as state}]
-    (let [results (:results event)
-          segments (:segments results)]
-      (info "Writing batch " 
-            (m/replica-version (:messenger state)) (m/epoch (:messenger state)) 
-            (:task-name event) (:task-type event) (vec (:segments results)))
-      (send-messages messenger replica event segments)
-      {})))
+  (prepare-batch [this {:keys [event replica] :as state}]
+    ;; Flatten outputs in preparation for incremental sending in write-batch
+    (let [{:keys [id job-id task-id egress-tasks results task->group-by-fn]} event
+          segments (:segments results)
+          grouped (group-by :flow segments)
+          job-task-id-slots (get-in replica [:task-slot-ids job-id])
+          output (reduce (fn [accum [flow messages]]
+                           (reduce (fn [accum* {:keys [message]}]
+                                     (let [hash-group (g/hash-groups message egress-tasks task->group-by-fn)
+                                           task-slots (map (fn [route] 
+                                                             {:src-peer-id id
+                                                              :slot-id (select-slot job-task-id-slots hash-group route)
+                                                              :dst-task-id [job-id route]}) 
+                                                           flow)]
+                                       (reduce conj! 
+                                               accum* 
+                                               (map (fn [task-slot]
+                                                      [message task-slot]) 
+                                                    task-slots))))
+                                   accum
+                                   messages))
+                         (transient [])
+                         grouped)]
+      (assoc state :context (persistent! output))))
+
+  (write-batch [this {:keys [event replica messenger context] :as state}]
+    (let [remaining (send-messages messenger replica context)]
+      (if (empty? remaining)
+        (-> state
+            (assoc :context [])
+            (assoc :state :runnable))
+        (-> state
+            (assoc :context remaining)
+            (assoc :state :blocked))))))
