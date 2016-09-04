@@ -573,13 +573,10 @@
                     subscriptions)))
 
   (emit-barrier-ack [messenger]
-    (run! set-barrier-emitted! subscriptions)
-    (as-> messenger mn 
-      (reduce (fn [m p] 
-                (offer-until-success! m p (->BarrierAck id (:dst-task-id p) (m/replica-version mn) (m/epoch mn)))) 
-              mn 
-              (flatten-publications publications))
-      (m/next-epoch mn))))
+    (reduce (fn [m p] 
+              (offer-until-success! m p (->BarrierAck id (:dst-task-id p) (m/replica-version m) (m/epoch m)))) 
+            messenger 
+            (flatten-publications publications))))
 
 (defmethod m/build-messenger :aeron [peer-config messenger-group id]
   (map->AeronMessenger {:id id 

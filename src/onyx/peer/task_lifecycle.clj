@@ -215,7 +215,10 @@
   (if (m/all-barriers-seen? messenger)
     ;; Add me later
     ;;(extensions/write-checkpoint log job-id replica-version epoch task-id slot-id :state {:3 4})
-    (assoc state :messenger (m/emit-barrier-ack messenger))
+    (assoc state :messenger (-> messenger
+                                (m/emit-barrier-ack)
+                                (m/next-epoch)
+                                (m/unblock-subscriptions!)))
     state))
 
 ;; FIXME: create an issue to reduce number of times exhaust input is written

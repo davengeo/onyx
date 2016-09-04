@@ -352,17 +352,11 @@
                     (messenger->subscriptions messenger))))
 
   (emit-barrier-ack [messenger]
-    (as-> messenger mn 
-      (reduce (fn [m p] 
-                ;(info "Acking barrier to " id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
-                (write m p (->BarrierAck id (:dst-task-id p) (m/replica-version mn) (m/epoch mn)))) 
-              mn 
-              (get publications id))
-      (m/next-epoch mn)
-      (update-in mn
-                 [:subscriptions id] 
-                 (fn [ss]
-                   (mapv set-barrier-emitted ss))))))
+    (reduce (fn [m p] 
+              ;(info "Acking barrier to " id (:dst-task-id p) (m/replica-version mn) (m/epoch mn))
+              (write m p (->BarrierAck id (:dst-task-id p) (m/replica-version m) (m/epoch m)))) 
+            messenger 
+            (get publications id))))
 
 (defn immutable-messenger [peer-group]
   (map->ImmutableMessenger {:peer-group peer-group}))
