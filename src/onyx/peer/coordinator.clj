@@ -67,22 +67,47 @@
       (reduce m/remove-publication m remove-pubs)
       (reduce m/add-publication m add-pubs))))
 
+; (defn emit-all-barriers 
+;   ([state]
+;    (emit-all-barriers state {}))
+;   ([{:keys [messenger context] :as state} barrier-opts]
+;    (loop [pubs context]
+;      (if-not (empty? pubs)
+;        (let [pub (first pubs)
+;              ret (m/emit-barrier messenger pub)]
+;          (println "RET " ret)
+;          (if (= :success ret)
+;            (recur (rest pubs))
+;            (recur pubs)
+;            #_(-> state
+;                  (assoc :context pubs)
+;                  (assoc :state :blocked))))
+;        (-> state 
+;            (update :messenger m/unblock-subscriptions!)
+;            (assoc :state :runnable))))))
+
 (defn emit-reallocation-barrier 
   [{:keys [log job-id peer-id messenger prev-replica] :as state} new-replica]
   (let [new-messenger (-> messenger 
                           (transition-messenger prev-replica new-replica job-id peer-id)
                           (m/set-replica-version (get-in new-replica [:allocation-version job-id])))
         checkpoint-version (max-completed-checkpoints log new-replica job-id)
-        messenger (reduce (fn [m pub] 
-                            (m/emit-barrier m pub {:recover checkpoint-version}))
-                          (m/next-epoch new-messenger)
-                          (m/publications new-messenger))]
-    messenger))
+        new-messenger (m/next-epoch new-messenger)]
+    ;; FIXME need to retry
+    (run! (fn [pub] 
+            (while (not= :success (m/emit-barrier new-messenger pub {:recover checkpoint-version}))))
+          (m/publications new-messenger))
+    (assoc state 
+           :prev-replica new-replica
+           :messenger new-messenger)))
 
 (defn periodic-barrier [{:keys [prev-replica job-id messenger] :as state}]
-  (let [messenger (reduce m/emit-barrier 
-                          (m/next-epoch messenger) 
-                          (m/publications messenger))] 
+  (let [messenger (m/next-epoch messenger)] 
+    (println "PERIODIC BARRIER " (m/epoch messenger))
+    ;; FIXME need to retry
+    (run! (fn [pub] 
+            (while (not= :success (m/emit-barrier messenger pub)))) 
+          (m/publications messenger))
     (assoc state :messenger messenger)))
 
 (defn coordinator-action [action-type {:keys [messenger] :as state} new-replica]
@@ -93,9 +118,7 @@
   (case action-type 
     :shutdown (assoc state :messenger (component/stop messenger))
     :periodic-barrier (periodic-barrier state)
-    :reallocation (assoc state 
-                         :prev-replica new-replica
-                         :messenger (emit-reallocation-barrier state new-replica))))
+    :reallocation (emit-reallocation-barrier state new-replica)))
 
 (defn start-coordinator! [state]
   (thread

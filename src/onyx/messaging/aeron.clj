@@ -408,7 +408,6 @@
 
   component/Lifecycle
   (start [component]
-    (println "Ticket counters " (:ticket-counters messenger-group))
     (assoc component
            :ticket-counters 
            (:ticket-counters messenger-group)))
@@ -489,7 +488,6 @@
     (run! (fn [sub] (reset! (:barrier sub) nil)) subscriptions)
     (-> messenger 
         (assoc :replica-version replica-version)
-        ;(update :subscriptions (fn [ss] (mapv #(assoc % :barrier-ack nil :barrier nil) ss)))
         (m/set-epoch 0)))
 
   (replica-version [messenger]
@@ -529,11 +527,12 @@
     ;; Problem here is that if no slot will accept the message we will
     ;; end up having to recompress on the next offer
     ;; Possibly should try more than one iteration before returning
-    ;; TODO: should re-use unsafe buffers in aeron messenger
+    ;; TODO: should re-use unsafe buffers in aeron messenger. 
+    ;; Will require nippy to be able to write directly to unsafe buffers
     (let [payload ^bytes (messaging-compress (->Message id dst-task-id slot-id replica-version batch))
           buf ^UnsafeBuffer (UnsafeBuffer. payload)] 
       ;; shuffle publication order to ensure even coverage
-      ;; slow
+      ;; FIXME: slow
       (loop [pubs (shuffle (get-in publications [dst-task-id slot-id]))]
         (if-let [pub-info (first pubs)]
           (let [ret (.offer ^Publication (:publication pub-info) buf 0 (.capacity buf))]
@@ -550,7 +549,8 @@
           (recur (rest sbs)))))
     ;(info "ON REC" id (m/all-barriers-seen? messenger))
     (if (m/all-barriers-seen? messenger)
-      (let [recover (:recover @(:barrier (first subscriptions)))] 
+      (let [_ (info "ALL SEEN SUBS " (vec subscriptions))
+            recover (:recover @(:barrier (first subscriptions)))] 
         (assert (= 1 (count (set (map (comp :recover deref :barrier) subscriptions)))))
         (assert recover)
         recover)))
@@ -559,10 +559,14 @@
     (onyx.messaging.messenger/emit-barrier messenger publication {}))
 
   (emit-barrier [messenger publication barrier-opts]
-    (offer-until-success! messenger 
-                          publication
-                          (merge (->Barrier id (:dst-task-id publication) (m/replica-version messenger) (m/epoch messenger))
-                                 barrier-opts)))
+    (let [barrier (merge (->Barrier id (:dst-task-id publication) (m/replica-version messenger) (m/epoch messenger))
+                         barrier-opts)
+          publication ^Publication (:publication publication)
+          buf ^UnsafeBuffer (UnsafeBuffer. ^bytes (messaging-compress barrier))]
+      (let [ret (.offer ^Publication publication buf 0 (.capacity buf))] 
+        (if (neg? ret)
+          :fail
+          :success))))
 
   (unblock-subscriptions! [messenger]
     (run! set-barrier-emitted! subscriptions)

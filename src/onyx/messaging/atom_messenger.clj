@@ -154,7 +154,7 @@
   (emit-barrier
     [messenger publication barrier-opts]
     (update-messenger-atom! messenger m/emit-barrier publication barrier-opts)
-    messenger)
+    :success)
   
   (unblock-subscriptions! 
     [messenger]

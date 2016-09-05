@@ -401,7 +401,7 @@
                                                     [500 g/write-outbox-entries-gen]
                                                     [500 g/apply-log-entries-gen]])
                                     
-                                    50000
+                                    500
                                     ))))]
            (println "Phases" (map count phases))
            (let [generated {:phases phases 
