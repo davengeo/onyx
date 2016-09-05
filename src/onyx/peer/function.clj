@@ -9,28 +9,27 @@
             [onyx.types :as types]
             [onyx.static.uuid :refer [random-uuid]]
             [onyx.types :refer [map->Barrier map->BarrierAck]]
+            [onyx.plugin.onyx-plugin :as op]
             [taoensso.timbre :as timbre :refer [debug info]]))
 
-(defn read-function-batch [{:keys [event] :as state}]
-  (let [{:keys [id job-id task-map batch-size]} event
-        messenger (:messenger state)
-        new-batch (loop [accum []]
-                    (let [new-messages (m/poll messenger)]
-                      (if (empty? new-messages)
-                        accum
-                        (let [all (into accum new-messages)] 
-                          (if (>= (count all) batch-size)
-                            all
-                            (recur all))))))]
-    ;(info "MMMM receving messages " (:task event) new-batch)
-    ;(info "Receiving messages" id (:onyx/name (:task-map event)) (m/all-barriers-seen? messenger) messages (= new-messenger messenger))
-    ;(info "Done reading function batch" job-id (:onyx/name (:task-map event)) id messages)
-    ;(println "FUNCTION BATCH " message)
-    (assoc-in state [:event :batch] new-batch)))
+(defrecord FunctionPlugin []
+  op/OnyxPlugin
+  (start [this] this)
+  (stop [this event] this))
 
-;; move to another file?
+(defn read-function-batch [{:keys [event messenger] :as state}]
+  (let [{:keys [id job-id task-map batch-size]} event
+        batch (loop [accum []]
+                (let [new-messages (m/poll messenger)]
+                  (if (empty? new-messages)
+                    accum
+                    (let [all (into accum new-messages)] 
+                      (if (>= (count all) batch-size)
+                        all
+                        (recur all))))))]
+    (assoc state :event (assoc event :batch batch))))
+
 (defn read-input-batch [{:keys [event pipeline] :as state}]
-  ;(throw (Exception. "I DON'T THINK THIS SHOULD BE ABLE TO READ UNTIL IT RECOVERS"))
   (let [{:keys [task-map id job-id task-id]} event
         batch-size (:onyx/batch-size task-map)
         [next-reader batch] 
@@ -45,8 +44,7 @@
                        (conj outgoing (types/input (random-uuid) segment)))
                 [next-reader outgoing]))
             [reader outgoing]))]
-    ;(when-not (empty? batch) (println "INPUT BATCH " batch))
-    (info "Reading batch " job-id task-id "peer-id" id batch)
+    (info "Reading batch" job-id task-id "peer-id" id batch)
     (-> state
         (assoc :pipeline next-reader)
-        (assoc-in [:event :batch] batch))))
+        (assoc :event (assoc event :batch batch)))))

@@ -13,14 +13,9 @@
             [onyx.log.replica :refer [base-replica]]
             [onyx.monitoring.no-op-monitoring :refer [no-op-monitoring-agent]]
             [onyx.extensions :as extensions]
-
             [onyx.generative.manual-shrink]
-
-            ;; for state output
             [onyx.messaging.messenger :as m]
-
             [onyx.messaging.immutable-messenger :as im]
-
             [com.stuartsierra.component :as component]
             [onyx.static.planning :as planning]
             [onyx.peer.task-lifecycle :as tl]
@@ -404,7 +399,10 @@
                                                     ;; We need them to add peers, remove peers, etc
                                                     [500 g/play-group-commands-gen]
                                                     [500 g/write-outbox-entries-gen]
-                                                    [500 g/apply-log-entries-gen]])))))]
+                                                    [500 g/apply-log-entries-gen]])
+                                    
+                                    50000
+                                    ))))]
            (println "Phases" (map count phases))
            (let [generated {:phases phases 
                             :uuid-seed uuid-seed}]

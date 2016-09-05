@@ -21,7 +21,6 @@
             [onyx.log.replica]
             [onyx.extensions :as extensions]
             [onyx.types :refer [->Results ->MonitorEvent map->Event dec-count! inc-count! map->EventState ->EventState]]
-            ;[onyx.peer.event-state :as event-state]
             [onyx.peer.window-state :as ws]
             [onyx.peer.transform :refer [apply-fn]]
             [onyx.plugin.onyx-input :as oi]
@@ -33,19 +32,6 @@
             [onyx.static.default-vals :refer [defaults arg-or-default]]
             [onyx.messaging.aeron :as messaging]
             [onyx.messaging.common :as mc]))
-
-; (defn resolve-log [{:keys [peer-opts] :as pipeline}]
-;   (let [log-impl (arg-or-default :onyx.peer/state-log-impl peer-opts)] 
-;     (assoc pipeline :state-log (if (:windowed-task? pipeline) 
-;                                  (state-extensions/initialize-log log-impl pipeline)))))
-
-; (defn resolve-filter-state [{:keys [peer-opts] :as pipeline}]
-;   (let [filter-impl (arg-or-default :onyx.peer/state-filter-impl peer-opts)] 
-;     (assoc pipeline 
-;            :filter-state 
-;            (if (and (:windowed-task? pipeline)
-;                     (:uniquesness-task? pipeline))
-;              (atom (state-extensions/initialize-filter filter-impl pipeline))))))
 
 (s/defn start-lifecycle? [event]
   (let [rets (lc/invoke-start-task event)]
@@ -123,42 +109,20 @@
 
 (defn read-batch [state]
   (assert (:event state))
+  ;; FIXME ADD INVOKE AFTER READ BATCH
   (let [task-type (:task-type (:event state))
         _ (assert task-type)
         _ (assert (:apply-fn (:event state)))
         f (get input-readers task-type)]
-    (f state))
-
-  ; (lc/invoke-read-batch 
-  ;   (fn read-batch-invoke
-  ;     [{:keys [task-type] :as event}]
-  ;     (let [f (get input-readers task-type)
-  ;           rets (f state)]
-  ;       ;; FIXME INVOKE AFTER READ BATCH
-  ;       #_(lc/invoke-after-read-batch rets)))
-  ;   (:event state))
-  )
+    (f state)))
 
 (defn prepare-batch [{:keys [pipeline] :as state}] 
-  ;; FIXME invoke catch
+  ;; FIXME invoke-prepare-batch/write-batch
   (oo/prepare-batch pipeline state))
 
 (defn write-batch [{:keys [pipeline] :as state}] 
-  ;; FIXME invoke catch
-  (oo/write-batch pipeline state)
-
-  ; (update state 
-  ;         :event
-  ;         (fn [event] 
-  ;           (lc/invoke-write-batch 
-  ;             (s/fn :- os/Event 
-  ;               [event :- os/Event]
-  ;               (let [rets (merge event )]
-  ;                 (trace (:log-prefix event) (format "Wrote %s segments" (count (:segments (:results rets)))))
-  ;                 rets))
-  ;             event)))
-  
-  )
+  ;; FIXME invoke-write-batch
+  (oo/write-batch pipeline state))
 
 (defn handle-exception [task-info log e group-ch outbox-ch id job-id]
   (let [data (ex-data e)
@@ -169,7 +133,6 @@
           (>!! group-ch [:restart-vpeer id]))
       (do (warn (logger/merge-error-keys e task-info "Handling uncaught exception thrown inside task lifecycle - killing this job."))
           (let [entry (entry/create-log-entry :kill-job {:job job-id})]
-            ;(println "writing chunk " e inner entry)
             (extensions/write-chunk log :exception inner job-id)
             (>!! outbox-ch entry))))))
 
@@ -177,29 +140,45 @@
   (m/poll messenger)
   state)
 
-(defn emit-all-barriers [messenger]
-  (reduce m/emit-barrier messenger (m/publications messenger)))
+(defn emit-all-barriers [{:keys [messenger context] :as state}]
+  (assoc state :messenger (m/unblock-subscriptions! (reduce m/emit-barrier messenger context))))
+
+(defn prepare-emit-barriers [{:keys [event messenger] :as state}]
+  (let [publications (m/publications messenger)
+        new-messenger (m/next-epoch messenger)]
+    (-> state
+        (assoc :messenger new-messenger)
+        (assoc :context publications))))
+
+(defn record-pipeline-barrier [{:keys [event messenger] :as state}]
+  (if (= :input (:task-type event))
+    (let [replica-version (m/replica-version messenger)
+          epoch (m/epoch messenger)]
+      (assoc-in state 
+                [:barriers replica-version epoch] 
+                {:checkpoint (oi/checkpoint (:pipeline state))
+                 :completed? (oi/completed? (:pipeline state))}))
+    state))
+
+(defn write-state-checkpoint! [{:keys [event messenger] :as state}]
+  (let [replica-version (m/replica-version messenger)
+        epoch (m/epoch messenger)]
+    (when (:windowed-task? event) 
+      (let [{:keys [job-id task-id slot-id log]} event] 
+        (extensions/write-checkpoint log job-id replica-version epoch task-id slot-id 
+                                   :state 
+                                   (mapv ws/export-state (:windows-state state)))))))
 
 (defn emit-barriers [{:keys [event messenger] :as state}]
-  (let [{:keys [task-type id]} event] 
+  (let [{:keys [task-type]} event] 
     (if (and (#{:function :input} task-type) (m/all-barriers-seen? messenger))
-      (let [publications (m/publications messenger)
-            new-messenger (-> messenger 
-                              (m/next-epoch)
-                              (emit-all-barriers)
-                              (m/unblock-subscriptions!))
-            replica-version (m/replica-version new-messenger)
-            epoch (m/epoch new-messenger)
-            {:keys [job-id task-id slot-id log]} event]
-        (when (:windowed-task? event) 
-          (extensions/write-checkpoint log job-id replica-version epoch task-id slot-id 
-                                       :state 
-                                       (mapv ws/export-state (:windows-state state))))
-        (cond-> (assoc state :messenger new-messenger)
-          (= :input task-type)
-          (assoc-in [:barriers replica-version epoch] 
-                    {:checkpoint (oi/checkpoint (:pipeline state))
-                     :completed? (oi/completed? (:pipeline state))})))
+      (let [new-state (-> state
+                          (prepare-emit-barriers)
+                          (emit-all-barriers)
+                          (assoc :context nil)
+                          (record-pipeline-barrier))]
+        (write-state-checkpoint! new-state)
+        new-state)     
       state)))
 
 (defn ack-barriers [{:keys [messenger] :as state}]
@@ -213,14 +192,14 @@
                                 (m/unblock-subscriptions!)))
     state))
 
-(defn complete-job! [{:keys [event messenger] :as state}] ;; Fixme StateMonad
-  (let [{:keys [job-id task-id]} event
-        entry (entry/create-log-entry :exhaust-input {:replica-version (m/replica-version messenger)
-                                                      ;:epoch (m/epoch (:messenger state))
-                                                      :job job-id 
-                                                      :task task-id})]
+(defn complete-job! [{:keys [event messenger] :as state}]
+  (let [{:keys [job-id task-id outbox-ch]} event
+        entry (entry/create-log-entry :exhaust-input 
+                                      {:replica-version (m/replica-version messenger)
+                                       :job job-id 
+                                       :task task-id})]
     (info "Job completed" job-id task-id (:replica-version (:args entry)))
-    (>!! (:outbox-ch event) entry)))
+    (>!! outbox-ch entry)))
 
 (defn backoff-when-drained! [event]
   (Thread/sleep (arg-or-default :onyx.peer/drained-back-off (:peer-opts event))))
@@ -252,6 +231,7 @@
         (if-let [barrier (get-in barriers [replica-version epoch])] 
           (let [{:keys [job-id task-id slot-id log]} event
                 completed? (:completed? barrier)] 
+            (extensions/write-checkpoint log job-id replica-version epoch task-id slot-id :input (:checkpoint barrier))
             (when completed?
               (if (not (:exhausted? state))
                 (complete-job! state)
@@ -272,6 +252,7 @@
 
 (defn recover-stored-checkpoint
   [{:keys [log job-id task-id slot-id] :as event} checkpoint-type recover]
+  ;(println "Read checkpoints" (extensions/read-checkpoints log job-id))
   (let [checkpointed (-> (extensions/read-checkpoints log job-id)
                          (get recover)
                          (get [task-id slot-id checkpoint-type]))]
@@ -279,9 +260,10 @@
       checkpointed)))
 
 (defn next-windows-state
-  [{:keys [log-prefix task-map windows triggers] :as event} recover]
+  [{:keys [event] :as state} recover]
   (if (:windowed-task? event)
-    (let [stored (recover-stored-checkpoint event :state recover)]
+    (let [{:keys [log-prefix task-map windows triggers]} event
+          stored (recover-stored-checkpoint event :state recover)]
       (->> windows
            (mapv (fn [window] (wc/resolve-window-state window triggers task-map)))
            (mapv (fn [stored ws]
@@ -304,15 +286,12 @@
       ;                 (or stored (repeat [])))))
       )))
 
-(defn next-pipeline-state [pipeline event recover]
+(defn next-pipeline-state [{:keys [state pipeline event]} recover]
   (if (= :input (:task-type event)) 
     (let [stored (recover-stored-checkpoint event :input recover)]
-      (info "Recovering checkpoint "  (:job-id event) (:task-id event) stored)
+      (info "Recovering checkpoint" (:job-id event) (:task-id event) stored)
       (oi/recover pipeline stored))
     pipeline))
-
-(defn fetch-recover [{:keys [event messenger] :as state}]
-  (m/poll-recover messenger))
 
 (defn emit-recover-barriers [messenger recover]
   (reduce (fn [m pub] 
@@ -330,8 +309,8 @@
                         (emit-recover-barriers recover)
                         (m/unblock-subscriptions!)))
         _ (info "Recovering pipeline state: " job-id task-id slot-id recover task-type)
-        windows-state (next-windows-state event recover)
-        next-pipeline (next-pipeline-state (:pipeline state) event recover)
+        windows-state (next-windows-state state recover)
+        next-pipeline (next-pipeline-state state recover)
         next-state (->EventState :start-processing
                                  :runnable
                                  replica
@@ -347,8 +326,8 @@
       (ws/assign-windows next-state :recovered)
       next-state)))
 
-(defn try-recover [state]
-  (if-let [recover (fetch-recover state)]
+(defn try-recover [{:keys [messenger] :as state}]
+  (if-let [recover (m/poll-recover messenger)]
     (assoc (recover-state state recover) :state :runnable)
     (assoc state :state :blocked)))
 
@@ -498,8 +477,7 @@
            (if pipeline
              (op/start pipeline)
              (throw (ex-info "Failure to resolve plugin builder fn. Did you require the file that contains this symbol?" {:kw kw})))))
-       ;; TODO, make this a unique type with protocol dispatch - don't use extend-type
-       (Object.))
+       (function/->FunctionPlugin))
       (catch Throwable e
         (throw e)))))
 
@@ -584,7 +562,8 @@
                              :group-ch group-ch
                              :task-kill-ch task-kill-ch
                              :kill-ch kill-ch
-                             :peer-opts opts ;; rename to peer-config eventually
+                             ;; Rename to peer-config
+                             :peer-opts opts
                              :fn (operation/resolve-task-fn task-map)
                              :replica-atom replica
                              :log-prefix log-prefix})
