@@ -140,20 +140,21 @@
   (m/poll messenger)
   state)
 
-(defn emit-all-barriers 
+(defn offer-barriers 
   [{:keys [messenger context] :as state}]
    (loop [pubs (:publications context)]
      (if-not (empty? pubs)
        (let [pub (first pubs)
              ret (m/emit-barrier messenger pub (:barrier-opts context))]
+         (println "RET IS " ret)
          (if (= :success ret)
            (recur (rest pubs))
-           (recur pubs)
-           #_(-> state
-               (assoc :context pubs)
+           (-> state
+               (assoc-in [:context :publications] pubs)
                (assoc :state :blocked))))
        (-> state 
            (update :messenger m/unblock-subscriptions!)
+           (assoc :context nil)
            (assoc :state :runnable)))))
 
 (defn record-pipeline-barrier [{:keys [event messenger pipeline] :as state}]
@@ -177,12 +178,9 @@
 (defn emit-barriers [{:keys [event messenger context] :as state}]
   (assert (#{:input :function} (:task-type event)))
   (if (:emit-barriers? context)
-    (let [new-state (-> state
-                        (emit-all-barriers)
-                        (assoc :context nil))]
-      (assert (or (not= :input (:task-type (:event new-state))) (not (empty? (:barriers new-state)))))
-      ;(println "DONE EMITTING EMITTING")
-      (write-state-checkpoint! new-state)
+    (let [new-state (offer-barriers state)]
+      (when-not (= :blocked (:state new-state))
+        (write-state-checkpoint! new-state))
       new-state))     
       state)
 
@@ -301,13 +299,12 @@
         {:keys [job-id task-type windows task-id slot-id] :as event} (:event state)
         _ (println "RECOVERING STATE " task-id context)
         {:keys [messenger] :as state} (if (= task-type :output)
-                                        (assoc state 
-                                               :messenger (m/emit-barrier-ack messenger)
-                                               :context nil)
+                                        state
                                         (-> state
                                             (update :messenger m/next-epoch)
-                                            (emit-all-barriers)
+                                            (offer-barriers)
                                             (assoc :context nil)))
+        ;; TODO HERE, if state is blocked currently, just return here, then resume
         _ (println "Recovering pipeline state: " job-id task-id slot-id task-type)
         windows-state (next-windows-state state (:recover context))
         next-pipeline (next-pipeline-state state (:recover context))

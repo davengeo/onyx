@@ -145,7 +145,6 @@
 (defprotocol Coordinator
   (start [this])
   (stop [this])
-  (emit-barrier [this])
   (started? [this])
   (next-state [this old-replica new-replica]))
 
@@ -197,7 +196,6 @@
       (close! allocation-ch))
     (info "Coordinator stopped.")
     (assoc this :allocation-ch nil :started? false :shutdown-ch nil :coordinator-thread nil))
-  (emit-barrier [this])
   (next-state [this old-replica new-replica]
     (let [started? (= (get-in old-replica [:coordinators job-id]) 
                       peer-id)
