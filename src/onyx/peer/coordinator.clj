@@ -67,24 +67,21 @@
       (reduce m/remove-publication m remove-pubs)
       (reduce m/add-publication m add-pubs))))
 
-; (defn emit-all-barriers 
-;   ([state]
-;    (emit-all-barriers state {}))
-;   ([{:keys [messenger context] :as state} barrier-opts]
-;    (loop [pubs context]
-;      (if-not (empty? pubs)
-;        (let [pub (first pubs)
-;              ret (m/emit-barrier messenger pub)]
-;          (println "RET " ret)
-;          (if (= :success ret)
-;            (recur (rest pubs))
-;            (recur pubs)
-;            #_(-> state
-;                  (assoc :context pubs)
-;                  (assoc :state :blocked))))
-;        (-> state 
-;            (update :messenger m/unblock-subscriptions!)
-;            (assoc :state :runnable))))))
+(defn offer-barriers 
+  [{:keys [messenger rem-barriers barrier-opts] :as state}]
+  (assert messenger)
+  (loop [pubs rem-barriers]
+    (if-not (empty? pubs)
+      (let [pub (first pubs)
+            ret (m/emit-barrier messenger pub barrier-opts)]
+        (case ret
+          :success (recur (rest pubs))
+          :fail (assoc state :rem-barriers pubs)))
+      (-> state 
+          (update :messenger m/unblock-subscriptions!)
+          (assoc :checkpoint-version nil)
+          (assoc :offering? false)
+          (assoc :rem-barriers nil)))))
 
 (defn emit-reallocation-barrier 
   [{:keys [log job-id peer-id messenger prev-replica] :as state} new-replica]
@@ -93,29 +90,30 @@
                           (m/set-replica-version (get-in new-replica [:allocation-version job-id])))
         checkpoint-version (max-completed-checkpoints log new-replica job-id)
         new-messenger (m/next-epoch new-messenger)]
-    ;; FIXME need to retry
-    (run! (fn [pub] 
-            (while (not= :success (m/emit-barrier new-messenger pub {:recover checkpoint-version}))))
-          (m/publications new-messenger))
     (assoc state 
+           :offering? true
+           :barrier-opts {:recover checkpoint-version}
+           :rem-barriers (m/publications new-messenger)
            :prev-replica new-replica
            :messenger new-messenger)))
 
 (defn periodic-barrier [{:keys [prev-replica job-id messenger] :as state}]
   (let [messenger (m/next-epoch messenger)] 
-    (println "PERIODIC BARRIER " (m/epoch messenger))
-    ;; FIXME need to retry
-    (run! (fn [pub] 
-            (while (not= :success (m/emit-barrier messenger pub)))) 
-          (m/publications messenger))
-    (assoc state :messenger messenger)))
+    (assoc state 
+           :offering? true
+           :barrier-opts {}
+           :messenger messenger
+           :rem-barriers (m/publications messenger))))
 
 (defn coordinator-action [action-type {:keys [messenger] :as state} new-replica]
   (assert 
    (if (#{:reallocation} action-type)
      (some #{(:job-id state)} (:jobs new-replica))
      true))
+  (assert messenger)
+  (println "ACTION" action-type)
   (case action-type 
+    :offer-barriers (offer-barriers state)
     :shutdown (assoc state :messenger (component/stop messenger))
     :periodic-barrier (periodic-barrier state)
     :reallocation (emit-reallocation-barrier state new-replica)))
@@ -129,15 +127,22 @@
       (loop [state state]
         (let [timeout-ch (timeout barrier-period-ms)
               {:keys [shutdown-ch allocation-ch]} state
-              [new-replica ch] (alts!! [shutdown-ch allocation-ch timeout-ch])]
+              [v ch] (if (:offering? state)
+                       (alts!! [shutdown-ch allocation-ch] :default true)
+                       (alts!! [shutdown-ch allocation-ch timeout-ch]))]
+          (assert (:messenger state))
+
           (cond (= ch shutdown-ch)
                 (recur (coordinator-action :shutdown state (:prev-replica state)))
 
                 (= ch timeout-ch)
                 (recur (coordinator-action :periodic-barrier state (:prev-replica state)))
 
-                (and (= ch allocation-ch) new-replica)
-                (recur (coordinator-action :reallocation state new-replica))))))
+                (true? v)
+                (recur (coordinator-action :offer-barriers state (:prev-replica state)))
+
+                (and (= ch allocation-ch) v)
+                (recur (coordinator-action :reallocation state v))))))
     (catch Throwable e
       (>!! (:group-ch state) [:restart-vpeer (:peer-id state)])
       (fatal e "Error in coordinator")))))
