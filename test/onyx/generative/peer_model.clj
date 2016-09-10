@@ -147,6 +147,18 @@
             (gen/tuple peer-group-num-gen
                        peer-num-gen)))
 
+(def offer-barriers 
+  (gen/fmap (fn [[g p]] 
+              {:type :peer
+               :command :offer-barriers
+               ;; Should be one for each known peer in the group, once it's
+               ;; not one peer per group
+               :group-id g
+               :peer-owner-id [g p]
+               :iterations 1})
+            (gen/tuple peer-group-num-gen
+                       peer-num-gen)))
+
 (defn write-outbox-entries [state entries]
   (reduce (fn [s entry]
             (update-in s 
@@ -256,19 +268,21 @@
                 prev-state (or (get-in @task-component [:task-lifecycle :prev-state])
                                init-state)
                 prev-replica-version (m/replica-version (:messenger prev-state))
-                new-state (case command
-                            :task-iteration (tl/next-state prev-state current-replica)
-                            :periodic-barrier (assoc prev-state 
-                                                     :coordinator 
-                                                     (let [coordinator (:coordinator prev-state)]
-                                                       (if (coord/started? coordinator) 
-                                                         (assoc coordinator 
-                                                                :coordinator-thread 
-                                                                (onyx.peer.coordinator/coordinator-action
-                                                                  :periodic-barrier
-                                                                  (:coordinator-thread coordinator)
-                                                                  (:prev-replica (:coordinator-thread coordinator))))
-                                                         coordinator))))]
+                new-state (cond (= command :task-iteration) 
+                                (tl/next-state prev-state current-replica)
+
+                                (#{:periodic-barrier :offer-barriers} command)
+                                (assoc prev-state 
+                                       :coordinator 
+                                       (let [coordinator (:coordinator prev-state)]
+                                         (if (coord/started? coordinator) 
+                                           (assoc coordinator 
+                                                  :coordinator-thread 
+                                                  (onyx.peer.coordinator/coordinator-action
+                                                   command
+                                                   (:coordinator-thread coordinator)
+                                                   (:prev-replica (:coordinator-thread coordinator))))
+                                           coordinator))))]
             (swap! task-component assoc-in [:task-lifecycle :prev-state] new-state)
             (assoc groups 
                    group-id 

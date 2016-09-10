@@ -68,20 +68,22 @@
       (reduce m/add-publication m add-pubs))))
 
 (defn offer-barriers 
-  [{:keys [messenger rem-barriers barrier-opts] :as state}]
+  [{:keys [messenger rem-barriers barrier-opts offering?] :as state}]
   (assert messenger)
-  (loop [pubs rem-barriers]
-    (if-not (empty? pubs)
-      (let [pub (first pubs)
-            ret (m/emit-barrier messenger pub barrier-opts)]
-        (case ret
-          :success (recur (rest pubs))
-          :fail (assoc state :rem-barriers pubs)))
-      (-> state 
-          (update :messenger m/unblock-subscriptions!)
-          (assoc :checkpoint-version nil)
-          (assoc :offering? false)
-          (assoc :rem-barriers nil)))))
+  (if offering? 
+    (loop [pubs rem-barriers]
+      (if-not (empty? pubs)
+        (let [pub (first pubs)
+              ret (m/emit-barrier messenger pub barrier-opts)]
+          (case ret
+            :success (recur (rest pubs))
+            :fail (assoc state :rem-barriers pubs)))
+        (-> state 
+            (update :messenger m/unblock-subscriptions!)
+            (assoc :checkpoint-version nil)
+            (assoc :offering? false)
+            (assoc :rem-barriers nil))))
+    state))
 
 (defn emit-reallocation-barrier 
   [{:keys [log job-id peer-id messenger prev-replica] :as state} new-replica]
@@ -111,7 +113,6 @@
      (some #{(:job-id state)} (:jobs new-replica))
      true))
   (assert messenger)
-  (println "ACTION" action-type)
   (case action-type 
     :offer-barriers (offer-barriers state)
     :shutdown (assoc state :messenger (component/stop messenger))

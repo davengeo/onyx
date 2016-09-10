@@ -262,6 +262,11 @@
                                                 ;; not one peer per group
                                                 :group-id g
                                                 :peer-owner-id [g :p0]
+                                                :iterations 1}
+                                               {:type :peer
+                                                :command :offer-barriers
+                                                :group-id g
+                                                :peer-owner-id [g :p0]
                                                 :iterations 1}])
                                             groups)))
                   emit-exhaust-input [{:type :drain-commands}]]
@@ -389,6 +394,7 @@
                                     (gen/vector 
                                      (gen/frequency [[1000 g/task-iteration-gen]
                                                     [500 g/periodic-barrier]
+                                                    [500 g/offer-barriers]
                                                     ;; These should be infrequent
                                                     [5 g/add-peer-group-gen]
                                                     [5 g/add-peer-gen]
