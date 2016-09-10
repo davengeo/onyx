@@ -147,11 +147,11 @@
        (let [pub (first pubs)
              ret (m/emit-barrier messenger pub (:barrier-opts context))]
          (println "RET IS " ret)
-         (if (= :success ret)
-           (recur (rest pubs))
-           (-> state
-               (assoc-in [:context :publications] pubs)
-               (assoc :state :blocked))))
+         (case ret
+           :success (recur (rest pubs))
+           :fail (-> state
+                     (assoc-in [:context :publications] pubs)
+                     (assoc :state :blocked))))
        (-> state 
            (update :messenger m/unblock-subscriptions!)
            (assoc :context nil)
@@ -222,7 +222,6 @@
   [state]
   (ws/assign-windows state :new-segment))
 
-;; Exhausted needs to do at least poll-barriers, emit-barriers, and poll-acks
 (defn poll-acks [{:keys [event messenger barriers] :as state}]
   (let [new-messenger (m/poll-acks messenger)
         ack-result (m/all-acks-seen? new-messenger)]
@@ -294,40 +293,41 @@
       (oi/recover pipeline stored))
     pipeline))
 
-(defn recover-state [{:keys [messenger coordinator replica context] :as state}]
-  (let [old-replica (:replica state)
-        {:keys [job-id task-type windows task-id slot-id] :as event} (:event state)
+(defn recover-state [{:keys [messenger coordinator replica context event] :as state}]
+  (let [{:keys [job-id task-type windows task-id slot-id]} event 
         _ (println "RECOVERING STATE " task-id context)
-        {:keys [messenger] :as state} (if (= task-type :output)
-                                        state
-                                        (-> state
-                                            (update :messenger m/next-epoch)
-                                            (offer-barriers)
-                                            (assoc :context nil)))
-        ;; TODO HERE, if state is blocked currently, just return here, then resume
-        _ (println "Recovering pipeline state: " job-id task-id slot-id task-type)
-        windows-state (next-windows-state state (:recover context))
-        next-pipeline (next-pipeline-state state (:recover context))
-        next-state (->EventState :start-processing
-                                 :runnable
-                                 replica
-                                 messenger
-                                 coordinator
-                                 next-pipeline
-                                 {}
-                                 windows-state
-                                 (:exhausted? state)
-                                 (:init-event state)
-                                 (:event state)
-                                 nil)]
-    (if-not (empty? windows) 
-      (ws/assign-windows next-state :recovered)
-      next-state)))
+        new-state (if (= task-type :output)
+                    (assoc state :state :runnable)
+                    (offer-barriers state))]
+    (if (= :blocked (:state new-state))
+      new-state
+      (let [;; TODO HERE, if state is blocked currently, just return here, then resume
+            _ (println "Recovering pipeline state: " job-id task-id slot-id task-type)
+            windows-state (next-windows-state new-state (:recover context))
+            next-pipeline (next-pipeline-state new-state (:recover context))
+            next-state (->EventState :start-processing
+                                     :runnable
+                                     replica
+                                     (:messenger new-state)
+                                     coordinator
+                                     next-pipeline
+                                     {}
+                                     windows-state
+                                     (:exhausted? new-state)
+                                     (:init-event new-state)
+                                     (:event new-state)
+                                     nil)]
+        (if-not (empty? windows) 
+          (ws/assign-windows next-state :recovered)
+          next-state)))))
 
-(defn poll-recover [{:keys [messenger] :as state}]
+(defn poll-recover [{:keys [messenger event] :as state}]
   (if-let [recover (m/poll-recover messenger)]
     (assoc state 
            :lifecycle :recovering
+           :messenger (if (= :output (:task-type event))
+                        messenger
+                        (m/next-epoch messenger))
            :context {:recover recover
                      :barrier-opts {:recover recover}
                      :publications (m/publications messenger)})

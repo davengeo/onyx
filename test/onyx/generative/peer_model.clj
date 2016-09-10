@@ -340,7 +340,8 @@
       ;                 (if group))))
 
       :group
-      (apply-group-command groups event))))
+      (apply-group-command groups event)
+      (throw (Exception. (str "Unhandled command " (:type event)))))))
 
 (defn apply-model-command [model event]
   (if (sequential? event)

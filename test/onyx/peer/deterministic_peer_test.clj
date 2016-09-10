@@ -386,8 +386,8 @@
                      (gen/vector (submit-job-gen n-jobs job-ids n-input-peers) initial-submit?) 
                      (gen/no-shrink 
                        (gen/scale #(* 500 %) ; scale to larger command sets quicker
-                                  (gen/vector 
-                                    (gen/frequency [[1000 g/task-iteration-gen]
+                                    (gen/vector 
+                                     (gen/frequency [[1000 g/task-iteration-gen]
                                                     [500 g/periodic-barrier]
                                                     ;; These should be infrequent
                                                     [5 g/add-peer-group-gen]
@@ -399,10 +399,7 @@
                                                     ;; We need them to add peers, remove peers, etc
                                                     [500 g/play-group-commands-gen]
                                                     [500 g/write-outbox-entries-gen]
-                                                    [500 g/apply-log-entries-gen]])
-                                    
-                                    500
-                                    ))))]
+                                                    [500 g/apply-log-entries-gen]])))))]
            (println "Phases" (map count phases))
            (let [generated {:phases phases 
                             :uuid-seed uuid-seed}]
