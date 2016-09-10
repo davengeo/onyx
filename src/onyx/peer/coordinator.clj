@@ -113,6 +113,7 @@
      (some #{(:job-id state)} (:jobs new-replica))
      true))
   (assert messenger)
+  (println action-type)
   (case action-type 
     :offer-barriers (offer-barriers state)
     :shutdown (assoc state :messenger (component/stop messenger))

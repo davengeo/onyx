@@ -274,14 +274,16 @@
                                 (#{:periodic-barrier :offer-barriers} command)
                                 (assoc prev-state 
                                        :coordinator 
-                                       (let [coordinator (:coordinator prev-state)]
-                                         (if (coord/started? coordinator) 
+                                       (let [coordinator (:coordinator prev-state)
+                                             state (:coordinator-thread coordinator)]
+                                         (println "Offering?" command (:offering? state))
+                                         (if (and (coord/started? coordinator)
+                                                  ;; Do not issue a new barrier if still offering old one
+                                                  (or (not= command :periodic-barrier)
+                                                      (false? (:offering? state))))
                                            (assoc coordinator 
                                                   :coordinator-thread 
-                                                  (onyx.peer.coordinator/coordinator-action
-                                                   command
-                                                   (:coordinator-thread coordinator)
-                                                   (:prev-replica (:coordinator-thread coordinator))))
+                                                  (onyx.peer.coordinator/coordinator-action command state (:prev-replica state)))
                                            coordinator))))]
             (swap! task-component assoc-in [:task-lifecycle :prev-state] new-state)
             (assoc groups 
