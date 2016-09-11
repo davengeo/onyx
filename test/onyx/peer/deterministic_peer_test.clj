@@ -29,7 +29,8 @@
             [com.gfredericks.test.chuck.clojure-test :refer [checking for-all]]
 
             [taoensso.timbre :refer [fatal info debug] :as timbre]
-            [onyx.api]))
+            [onyx.api])
+  (:import [java.text SimpleDateFormat]))
 
 ;;;;;;;;;
 ;; Job code
@@ -240,6 +241,7 @@
                    (str (mapv :n segments)) 
                    (str "outputs not in order " input-task " " segments)))))))
 
+
 (defn job-completion-cmds 
   "Generates a series of commands that should allow any submitted jobs to finish.
    This consists of enough task lifecycle events, and enough exhaust-input outputs to finish."
@@ -390,31 +392,34 @@
             phases (gen/tuple
                      (gen/vector (submit-job-gen n-jobs job-ids n-input-peers) initial-submit?) 
                      (gen/no-shrink 
-                       (gen/scale #(* 500 %) ; scale to larger command sets quicker
-                                    (gen/vector 
-                                     (gen/frequency [[1000 g/task-iteration-gen]
-                                                    [500 g/periodic-barrier]
-                                                    [500 g/offer-barriers]
-                                                    ;; These should be infrequent
-                                                    [5 g/add-peer-group-gen]
-                                                    [5 g/add-peer-gen]
-                                                    [5 g/remove-peer-gen]
-                                                    [5 g/full-remove-peer-gen]
-                                                    [5 (submit-job-gen n-jobs job-ids n-input-peers)]
-                                                    ;; These need to be pretty likely, even though most will be no-ops
-                                                    ;; We need them to add peers, remove peers, etc
-                                                    [500 g/play-group-commands-gen]
-                                                    [500 g/write-outbox-entries-gen]
-                                                    [500 g/apply-log-entries-gen]])))))]
+                      (gen/scale #(* 500 %) ; scale to larger command sets quicker
+                                 (gen/vector 
+                                  (gen/frequency [[1000 g/task-iteration-gen]
+                                                  [500 g/periodic-barrier]
+                                                  [500 g/offer-barriers]
+                                                  ;; These should be infrequent
+                                                  [5 g/add-peer-group-gen]
+                                                  [5 g/add-peer-gen]
+                                                  [5 g/remove-peer-gen]
+                                                  [5 g/full-remove-peer-gen]
+                                                  [5 (submit-job-gen n-jobs job-ids n-input-peers)]
+                                                  ;; These need to be pretty likely, even though most will be no-ops
+                                                  ;; We need them to add peers, remove peers, etc
+                                                  [500 g/play-group-commands-gen]
+                                                  [500 g/write-outbox-entries-gen]
+                                                  [500 g/apply-log-entries-gen]])))))]
            (println "Phases" (map count phases))
            (let [generated {:phases phases 
                             :uuid-seed uuid-seed}]
              (try (run-test generated)
                   (catch Throwable t
-                    (let [filename (str "testcase.edn." (java.util.UUID/randomUUID))] 
+                    (let [date-str (.format (SimpleDateFormat. "yyyy_dd_MM_HH-mm-ss") (java.util.Date.))
+                          filename (str "target/test_check_output/testcase." date-str ".edn")] 
+                      (.mkdir (java.io.File. "target/test_check_output"))
                       (spit filename (pr-str generated))
                       (println "FAILED RUN WRITTEN TO" filename t)
                       (throw t)))))))
+
 
 (defn successful-run? [generated]
   (try (run-test generated)
